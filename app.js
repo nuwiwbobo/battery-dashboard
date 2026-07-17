@@ -212,6 +212,16 @@ function render() {
 function renderConfig() {
   const el = document.getElementById('config-profile');
   if (el) el.value = state.config.capacityProfile;
+  updateThresholdDisplay();
+}
+
+function updateThresholdDisplay() {
+  const el = document.getElementById('oc-threshold');
+  if (!el) return;
+  const capacity = state.config.capacityProfile === 'RSS'
+    ? state.config.rssCapacity
+    : state.config.tssErCapacity;
+  el.textContent = `${capacity / 5} A`;
 }
 
 function renderTable() {
@@ -393,12 +403,15 @@ function wireEvents() {
   // Config: capacity profile select
   const profileEl = document.getElementById('config-profile');
   if (profileEl) {
-    profileEl.addEventListener('change', () => {
+    const onProfileChange = () => {
       state.config.capacityProfile = profileEl.value;
       saveState();
+      updateThresholdDisplay();
       state.rows.forEach(r => updateRowInPlace(r.id));
       renderSummary();
-    });
+    };
+    profileEl.addEventListener('change', onProfileChange);
+    profileEl.addEventListener('input', onProfileChange);
   }
 }
 

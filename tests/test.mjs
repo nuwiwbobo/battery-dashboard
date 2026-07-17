@@ -87,3 +87,16 @@ test('comma decimal separator converts to period (Indonesian locale)', () => {
   const num = parseFloat(normalized);
   assert.ok(Math.abs(num - 2.2338) < 1e-9, `got ${num}`);
 });
+
+test('overCurrentDecision changes with capacity profile', () => {
+  // RSS: 300/5 = 60A threshold
+  // TSS/ER: 200/5 = 40A threshold
+  // At I=50A: TRUE for TSS/ER (50>40), FALSE for RSS (50<60)
+  assert.equal(overCurrentDecision(50, 300), false, '50A should be FALSE at RSS 300Ah');
+  assert.equal(overCurrentDecision(50, 200), true, '50A should be TRUE at TSS/ER 200Ah');
+  // Boundary
+  assert.equal(overCurrentDecision(40, 200), false, '40A is exactly C/5, not exceeding');
+  assert.equal(overCurrentDecision(40.0001, 200), true, '40.0001A exceeds C/5');
+  assert.equal(overCurrentDecision(60, 300), false, '60A is exactly C/5 for RSS');
+  assert.equal(overCurrentDecision(60.0001, 300), true, '60.0001A exceeds C/5 for RSS');
+});

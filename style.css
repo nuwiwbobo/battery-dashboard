@@ -58,6 +58,14 @@ h2 { margin: 1rem 0 0.5rem; font-size: 1.1rem; }
   padding: 0;
 }
 
+.config-info {
+  font-size: 0.85rem;
+  padding: 0.5rem;
+  border: 1px solid #eee;
+  border-radius: 3px;
+  background: #fafafa;
+}
+
 input[type="number"],
 input[type="text"],
 select {
