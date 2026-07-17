@@ -150,6 +150,148 @@ function setState(newState) {
   saveState();
 }
 
+// ====================================================================
+// Derived calculations (per row)
+// ====================================================================
+
+function computeRowDerived(row, allRows, config) {
+  const irOhms = normalizeIrOhms(row.ir, row.irUnit);
+  const iRipple = rippleCurrent(row.rippleVoltage, irOhms);
+  const power = dissipatedPower(row.rippleVoltage, irOhms);
+  const dT = predictedTemp(power, config.surfaceArea, config.h);
+
+  const capacity = config.capacityProfile === 'RSS'
+    ? config.rssCapacity
+    : config.tssErCapacity;
+  const overCurrent = overCurrentDecision(iRipple, capacity);
+  const tempCheck = tempCheckDecision(dT, config.tempAmanMax, config.tempCekMax);
+
+  const voltages = allRows
+    .map(r => r.cellVoltage)
+    .filter(v => v != null && !isNaN(v));
+  const meanV = mean(voltages);
+  const vDev = (row.cellVoltage != null && meanV != null)
+    ? row.cellVoltage - meanV
+    : null;
+  const vStatus = (vDev != null)
+    ? voltageStatus(Math.abs(vDev), config.voltAmanMax, config.voltCekMax)
+    : null;
+
+  return {
+    irOhms,
+    iRipple,
+    power,
+    dT,
+    overCurrent,
+    tempCheck,
+    vDev,
+    vStatus,
+    meanV,
+  };
+}
+
+function formatNumber(n, digits = 4) {
+  if (n == null || isNaN(n)) return '—';
+  if (Math.abs(n) >= 1000 || Math.abs(n) < 0.001) return n.toExponential(2);
+  return Number(n).toFixed(digits);
+}
+
+// ====================================================================
+// Render
+// ====================================================================
+
+function render() {
+  renderConfig();
+  renderTable();
+  renderSummary();
+}
+
+function renderConfig() {
+  const c = state.config;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  set('config-h', c.h);
+  set('config-area', c.surfaceArea);
+  set('config-d1', c.surfaceDims.d1);
+  set('config-d2', c.surfaceDims.d2);
+  set('config-d3', c.surfaceDims.d3);
+  set('config-rss', c.rssCapacity);
+  set('config-tss', c.tssErCapacity);
+  set('config-profile', c.capacityProfile);
+  set('config-temp-aman', c.tempAmanMax);
+  set('config-temp-cek', c.tempCekMax);
+  set('config-volt-aman', c.voltAmanMax);
+  set('config-volt-cek', c.voltCekMax);
+}
+
+function renderTable() {
+  const tbody = document.getElementById('cell-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  state.rows.forEach(row => {
+    const d = computeRowDerived(row, state.rows, state.config);
+    const tr = document.createElement('tr');
+    tr.dataset.rowId = row.id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="row-select" data-row-id="${row.id}"></td>
+      <td>${row.id}</td>
+      <td><input type="number" step="0.0001" class="cell-input" data-field="cellVoltage" data-row-id="${row.id}" value="${row.cellVoltage ?? ''}"></td>
+      <td><input type="number" step="0.0001" class="cell-input" data-field="ir" data-row-id="${row.id}" value="${row.ir ?? ''}"></td>
+      <td>
+        <select class="cell-input" data-field="irUnit" data-row-id="${row.id}">
+          <option value="ohm" ${row.irUnit === 'ohm' ? 'selected' : ''}>Ω</option>
+          <option value="mohm" ${row.irUnit === 'mohm' ? 'selected' : ''}>mΩ</option>
+        </select>
+      </td>
+      <td><input type="number" step="0.0001" class="cell-input" data-field="rippleVoltage" data-row-id="${row.id}" value="${row.rippleVoltage ?? ''}"></td>
+      <td class="derived">${formatNumber(d.iRipple, 4)}</td>
+      <td class="derived">${formatNumber(d.power, 6)}</td>
+      <td class="derived">${formatNumber(d.dT, 4)}</td>
+      <td class="derived ${d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : ''}">${d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE'}</td>
+      <td class="derived ${statusClass(d.tempCheck)}">${d.tempCheck ?? '—'}</td>
+      <td class="derived">${formatNumber(d.vDev, 4)}</td>
+      <td class="derived ${statusClass(d.vStatus)}">${d.vStatus ?? '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function statusClass(status) {
+  if (status === 'Aman') return 'status-aman';
+  if (status === 'Cek') return 'status-cek';
+  if (status === 'Ganti') return 'status-ganti';
+  return '';
+}
+
+function renderSummary() {
+  const voltages = state.rows.map(r => r.cellVoltage).filter(v => v != null && !isNaN(v));
+  const meanV = mean(voltages);
+  document.getElementById('mean-v').textContent = formatNumber(meanV, 4);
+
+  let aman = 0, cek = 0, ganti = 0;
+  state.rows.forEach(row => {
+    const d = computeRowDerived(row, state.rows, state.config);
+    [d.tempCheck, d.vStatus].forEach(s => {
+      if (s === 'Aman') aman++;
+      else if (s === 'Cek') cek++;
+      else if (s === 'Ganti') ganti++;
+    });
+  });
+  document.getElementById('count-aman').textContent = aman;
+  document.getElementById('count-cek').textContent = cek;
+  document.getElementById('count-ganti').textContent = ganti;
+}
+
+// ====================================================================
+// Bootstrap (browser-only)
+// ====================================================================
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    loadState();
+    render();
+  });
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     normalizeIrOhms,
