@@ -24,17 +24,21 @@ Single-page HTML/JS/CSS tool for monitoring battery cell health. Mirrors the cal
 
 ## Configuration
 
+Only one configurable parameter in the UI — all others use hardcoded defaults.
+
 | Field | Default | Description |
 |---|---|---|
-| h | 4.6 W/m²·°C | Convective heat-transfer coefficient |
-| Surface area | 0.2814 m² | Per-cell surface area (or compute from 3 dimensions) |
-| RSS Capacity | 300 Ah | RSS battery profile capacity |
-| TSS/ER Capacity | 200 Ah | TSS/ER battery profile capacity |
-| Capacity profile | RSS | Which capacity to use for over-current check |
-| Temp Aman max | 3 °C | Below this → Aman |
-| Temp Cek max | 8 °C | Below this (and ≥ Aman max) → Cek, else Ganti |
-| Volt Aman max | 0.05 V | \|deviation\| below this → Aman |
-| Volt Cek max | 0.1 V | \|deviation\| below this (and ≥ Aman max) → Cek, else Ganti |
+| Capacity profile | RSS | Which capacity to use for over-current check (RSS=300Ah, TSS/ER=200Ah) |
+
+Hardcoded defaults (not editable in v1):
+- h = 4.6 W/m²·°C
+- Surface area = 0.2814 m²
+- RSS Capacity = 300 Ah
+- TSS/ER Capacity = 200 Ah
+- Temp Aman max = 3 °C
+- Temp Cek max = 8 °C
+- Volt Aman max = 0.05 V
+- Volt Cek max = 0.1 V
 
 ## Calculation Formulas
 

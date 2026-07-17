@@ -100,7 +100,10 @@ function loadState() {
     if (!parsed || typeof parsed !== 'object') throw new Error('invalid shape');
     if (!parsed.config || !Array.isArray(parsed.rows)) throw new Error('missing fields');
     state = {
-      config: { ...DEFAULT_CONFIG, ...parsed.config },
+      config: {
+        ...DEFAULT_CONFIG,
+        capacityProfile: (parsed.config.capacityProfile === 'TSS/ER') ? 'TSS/ER' : 'RSS',
+      },
       rows: parsed.rows.map((r, i) => ({
         id: i + 1,
         cellVoltage: r.cellVoltage ?? null,
@@ -207,20 +210,8 @@ function render() {
 }
 
 function renderConfig() {
-  const c = state.config;
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
-  set('config-h', c.h);
-  set('config-area', c.surfaceArea);
-  set('config-d1', c.surfaceDims.d1);
-  set('config-d2', c.surfaceDims.d2);
-  set('config-d3', c.surfaceDims.d3);
-  set('config-rss', c.rssCapacity);
-  set('config-tss', c.tssErCapacity);
-  set('config-profile', c.capacityProfile);
-  set('config-temp-aman', c.tempAmanMax);
-  set('config-temp-cek', c.tempCekMax);
-  set('config-volt-aman', c.voltAmanMax);
-  set('config-volt-cek', c.voltCekMax);
+  const el = document.getElementById('config-profile');
+  if (el) el.value = state.config.capacityProfile;
 }
 
 function renderTable() {
@@ -399,66 +390,16 @@ function wireEvents() {
     render();
   });
 
-  // Config inputs
-  const configBindings = [
-    ['config-h', 'h', 'number'],
-    ['config-area', 'surfaceArea', 'number'],
-    ['config-rss', 'rssCapacity', 'number'],
-    ['config-tss', 'tssErCapacity', 'number'],
-    ['config-profile', 'capacityProfile', 'string'],
-    ['config-temp-aman', 'tempAmanMax', 'number'],
-    ['config-temp-cek', 'tempCekMax', 'number'],
-    ['config-volt-aman', 'voltAmanMax', 'number'],
-    ['config-volt-cek', 'voltCekMax', 'number'],
-  ];
-  configBindings.forEach(([elId, key, type]) => {
-    const el = document.getElementById(elId);
-    el.addEventListener('input', () => {
-      let val;
-      if (type === 'number') {
-        const raw = el.value.replace(',', '.');
-        val = parseFloat(raw);
-        if (isNaN(val) || val < 0) {
-          el.classList.add('invalid');
-          return;
-        }
-      } else {
-        val = el.value;
-      }
-      el.classList.remove('invalid');
-      state.config[key] = val;
+  // Config: capacity profile select
+  const profileEl = document.getElementById('config-profile');
+  if (profileEl) {
+    profileEl.addEventListener('change', () => {
+      state.config.capacityProfile = profileEl.value;
       saveState();
       state.rows.forEach(r => updateRowInPlace(r.id));
       renderSummary();
     });
-  });
-
-  // Surface area dimension inputs
-  ['config-d1', 'config-d2', 'config-d3'].forEach((elId, idx) => {
-    const key = ['d1', 'd2', 'd3'][idx];
-    const el = document.getElementById(elId);
-    el.addEventListener('input', () => {
-      const val = parseFloat(el.value);
-      if (!isNaN(val) && val >= 0) {
-        state.config.surfaceDims[key] = val;
-        saveState();
-      }
-    });
-  });
-
-  // Apply dimensions → area
-  document.getElementById('apply-dims-btn').addEventListener('click', () => {
-    const { d1, d2, d3 } = state.config.surfaceDims;
-    const area = surfaceArea(d1, d2, d3);
-    if (area == null) {
-      showBanner('Cannot compute area: invalid dimensions');
-      return;
-    }
-    state.config.surfaceArea = area;
-    document.getElementById('config-area').value = area;
-    saveState();
-    render();
-  });
+  }
 }
 
 // ====================================================================
