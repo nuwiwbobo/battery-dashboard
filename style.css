@@ -1,0 +1,159 @@
+/* battery-dashboard/style.css */
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  margin: 0;
+  padding: 1rem;
+  background: #f5f5f5;
+  color: #222;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+h1 { margin: 0; font-size: 1.5rem; }
+h2 { margin: 1rem 0 0.5rem; font-size: 1.1rem; }
+
+#config-panel {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.config-grid label,
+.config-grid fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  border: 1px solid #eee;
+  padding: 0.5rem;
+  border-radius: 3px;
+}
+
+.config-grid fieldset {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.config-grid fieldset label {
+  flex: 1;
+  min-width: 60px;
+  border: none;
+  padding: 0;
+}
+
+input[type="number"],
+select {
+  font: inherit;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  width: 100%;
+}
+
+input.invalid { border-color: #d33; background: #fee; }
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+button:hover { background: #f0f0f0; }
+
+#reset-btn { background: #fee; border-color: #d33; color: #a00; }
+#reset-btn:hover { background: #fdd; }
+
+.table-wrapper {
+  overflow-x: auto;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+#cell-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+#cell-table th,
+#cell-table td {
+  border: 1px solid #eee;
+  padding: 0.4rem 0.5rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+#cell-table th {
+  background: #f8f8f8;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+#cell-table input[type="number"] {
+  width: 80px;
+  text-align: right;
+}
+
+#cell-table input[type="number"].invalid { border-color: #d33; background: #fee; }
+
+#cell-table select { width: 70px; }
+
+#cell-table td.derived { background: #fafafa; font-variant-numeric: tabular-nums; }
+
+.status-aman { background: #cfc !important; font-weight: 600; }
+.status-cek { background: #ffeb3b !important; font-weight: 600; }
+.status-ganti { background: #ff8a65 !important; color: #fff; font-weight: 600; }
+.status-true { background: #ff8a65 !important; color: #fff; font-weight: 600; }
+.status-false { background: #e0e0e0; }
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+#summary {
+  display: flex;
+  gap: 1.5rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+}
+
+#banner {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fdd;
+  border: 1px solid #d33;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  max-width: 400px;
+  z-index: 1000;
+}

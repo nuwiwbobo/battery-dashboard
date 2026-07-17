@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Battery Cell Monitoring Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Battery Cell Monitoring Dashboard</h1>
+    <button id="reset-btn" type="button">Reset All</button>
+  </header>
+
+  <section id="config-panel">
+    <h2>Configuration</h2>
+    <div class="config-grid">
+      <label>
+        Heat transfer coefficient h (W/m²·°C)
+        <input type="number" id="config-h" step="0.1" min="0">
+      </label>
+      <label>
+        Surface area (m²)
+        <input type="number" id="config-area" step="0.0001" min="0">
+      </label>
+      <fieldset>
+        <legend>Surface area from dimensions (m)</legend>
+        <label>d1 <input type="number" id="config-d1" step="0.01" min="0"></label>
+        <label>d2 <input type="number" id="config-d2" step="0.01" min="0"></label>
+        <label>d3 <input type="number" id="config-d3" step="0.01" min="0"></label>
+        <button type="button" id="apply-dims-btn">Apply dimensions → area</button>
+      </fieldset>
+      <label>
+        RSS Capacity (Ah)
+        <input type="number" id="config-rss" step="1" min="0">
+      </label>
+      <label>
+        TSS/ER Capacity (Ah)
+        <input type="number" id="config-tss" step="1" min="0">
+      </label>
+      <label>
+        Capacity profile
+        <select id="config-profile">
+          <option value="RSS">RSS</option>
+          <option value="TSS/ER">TSS/ER</option>
+        </select>
+      </label>
+      <label>
+        Temp Aman max (°C)
+        <input type="number" id="config-temp-aman" step="0.1" min="0">
+      </label>
+      <label>
+        Temp Cek max (°C)
+        <input type="number" id="config-temp-cek" step="0.1" min="0">
+      </label>
+      <label>
+        Volt Aman max (V)
+        <input type="number" id="config-volt-aman" step="0.01" min="0">
+      </label>
+      <label>
+        Volt Cek max (V)
+        <input type="number" id="config-volt-cek" step="0.01" min="0">
+      </label>
+    </div>
+  </section>
+
+  <section id="cell-table-section">
+    <h2>Cell Measurements</h2>
+    <div class="table-wrapper">
+      <table id="cell-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="select-all"></th>
+            <th>#</th>
+            <th>Cell V (V)</th>
+            <th>IR</th>
+            <th>Unit</th>
+            <th>V_ripple (V rms)</th>
+            <th>I_ripple (A rms)</th>
+            <th>P (W)</th>
+            <th>ΔT (°C)</th>
+            <th>Over Current</th>
+            <th>Temp Check</th>
+            <th>V_dev (V)</th>
+            <th>V Status</th>
+          </tr>
+        </thead>
+        <tbody id="cell-tbody"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button type="button" id="add-row-btn">+ Add row</button>
+      <button type="button" id="delete-selected-btn">Delete selected</button>
+    </div>
+  </section>
+
+  <footer id="summary">
+    <span>Mean V: <strong id="mean-v">—</strong></span>
+    <span>Aman: <strong id="count-aman">0</strong></span>
+    <span>Cek: <strong id="count-cek">0</strong></span>
+    <span>Ganti: <strong id="count-ganti">0</strong></span>
+  </footer>
+
+  <div id="banner" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
