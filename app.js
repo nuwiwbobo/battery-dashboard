@@ -82,7 +82,7 @@ const SAMPLE_ROW = {
   id: 1,
   cellVoltage: 2.2338,
   ir: 0.563,
-  irUnit: 'ohm',
+  irUnit: 'mohm',
   rippleVoltage: 0.005,
 };
 
@@ -337,7 +337,7 @@ function wireEvents() {
       id: nextId,
       cellVoltage: null,
       ir: null,
-      irUnit: 'ohm',
+      irUnit: 'mohm',
       rippleVoltage: null,
     });
     saveState();
