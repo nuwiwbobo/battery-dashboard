@@ -17,26 +17,26 @@
     <div class="config-grid">
       <label>
         Heat transfer coefficient h (W/m²·°C)
-        <input type="number" id="config-h" step="0.1" min="0">
+        <input type="text" inputmode="decimal" id="config-h">
       </label>
       <label>
         Surface area (m²)
-        <input type="number" id="config-area" step="0.0001" min="0">
+        <input type="text" inputmode="decimal" id="config-area">
       </label>
       <fieldset>
         <legend>Surface area from dimensions (m)</legend>
-        <label>d1 <input type="number" id="config-d1" step="0.01" min="0"></label>
-        <label>d2 <input type="number" id="config-d2" step="0.01" min="0"></label>
-        <label>d3 <input type="number" id="config-d3" step="0.01" min="0"></label>
+        <label>d1 <input type="text" inputmode="decimal" id="config-d1"></label>
+        <label>d2 <input type="text" inputmode="decimal" id="config-d2"></label>
+        <label>d3 <input type="text" inputmode="decimal" id="config-d3"></label>
         <button type="button" id="apply-dims-btn">Apply dimensions → area</button>
       </fieldset>
       <label>
         RSS Capacity (Ah)
-        <input type="number" id="config-rss" step="1" min="0">
+        <input type="text" inputmode="decimal" id="config-rss">
       </label>
       <label>
         TSS/ER Capacity (Ah)
-        <input type="number" id="config-tss" step="1" min="0">
+        <input type="text" inputmode="decimal" id="config-tss">
       </label>
       <label>
         Capacity profile
@@ -47,19 +47,19 @@
       </label>
       <label>
         Temp Aman max (°C)
-        <input type="number" id="config-temp-aman" step="0.1" min="0">
+        <input type="text" inputmode="decimal" id="config-temp-aman">
       </label>
       <label>
         Temp Cek max (°C)
-        <input type="number" id="config-temp-cek" step="0.1" min="0">
+        <input type="text" inputmode="decimal" id="config-temp-cek">
       </label>
       <label>
         Volt Aman max (V)
-        <input type="number" id="config-volt-aman" step="0.01" min="0">
+        <input type="text" inputmode="decimal" id="config-volt-aman">
       </label>
       <label>
         Volt Cek max (V)
-        <input type="number" id="config-volt-cek" step="0.01" min="0">
+        <input type="text" inputmode="decimal" id="config-volt-cek">
       </label>
     </div>
   </section>

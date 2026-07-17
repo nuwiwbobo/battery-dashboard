@@ -234,15 +234,15 @@ function renderTable() {
     tr.innerHTML = `
       <td><input type="checkbox" class="row-select" data-row-id="${row.id}"></td>
       <td>${row.id}</td>
-      <td><input type="number" step="0.0001" class="cell-input" data-field="cellVoltage" data-row-id="${row.id}" value="${row.cellVoltage ?? ''}"></td>
-      <td><input type="number" step="0.0001" class="cell-input" data-field="ir" data-row-id="${row.id}" value="${row.ir ?? ''}"></td>
+      <td><input type="text" inputmode="decimal" class="cell-input" data-field="cellVoltage" data-row-id="${row.id}" value="${row.cellVoltage ?? ''}"></td>
+      <td><input type="text" inputmode="decimal" class="cell-input" data-field="ir" data-row-id="${row.id}" value="${row.ir ?? ''}"></td>
       <td>
         <select class="cell-input" data-field="irUnit" data-row-id="${row.id}">
           <option value="ohm" ${row.irUnit === 'ohm' ? 'selected' : ''}>Ω</option>
           <option value="mohm" ${row.irUnit === 'mohm' ? 'selected' : ''}>mΩ</option>
         </select>
       </td>
-      <td><input type="number" step="0.0001" class="cell-input" data-field="rippleVoltage" data-row-id="${row.id}" value="${row.rippleVoltage ?? ''}"></td>
+      <td><input type="text" inputmode="decimal" class="cell-input" data-field="rippleVoltage" data-row-id="${row.id}" value="${row.rippleVoltage ?? ''}"></td>
       <td class="derived">${formatNumber(d.iRipple, 4)}</td>
       <td class="derived">${formatNumber(d.power, 6)}</td>
       <td class="derived">${formatNumber(d.dT, 4)}</td>
@@ -260,6 +260,26 @@ function statusClass(status) {
   if (status === 'Cek') return 'status-cek';
   if (status === 'Ganti') return 'status-ganti';
   return '';
+}
+
+function updateRowInPlace(rowId) {
+  const row = state.rows.find(r => r.id === rowId);
+  if (!row) return;
+  const tr = document.querySelector(`#cell-tbody tr[data-row-id="${rowId}"]`);
+  if (!tr) return;
+  const d = computeRowDerived(row, state.rows, state.config);
+  const cells = tr.querySelectorAll('td');
+  if (cells.length < 13) return;
+  cells[6].textContent = formatNumber(d.iRipple, 4);
+  cells[7].textContent = formatNumber(d.power, 6);
+  cells[8].textContent = formatNumber(d.dT, 4);
+  cells[9].className = 'derived ' + (d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : '');
+  cells[9].textContent = d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE';
+  cells[10].className = 'derived ' + statusClass(d.tempCheck);
+  cells[10].textContent = d.tempCheck ?? '—';
+  cells[11].textContent = formatNumber(d.vDev, 4);
+  cells[12].className = 'derived ' + statusClass(d.vStatus);
+  cells[12].textContent = d.vStatus ?? '—';
 }
 
 function renderSummary() {
@@ -299,8 +319,8 @@ function wireEvents() {
     if (field === 'irUnit') {
       row.irUnit = target.value;
     } else {
-      const raw = target.value;
-      if (raw === '' || raw === '-') {
+      const raw = target.value.replace(',', '.');
+      if (raw === '' || raw === '-' || raw === '.') {
         row[field] = null;
         target.classList.remove('invalid');
       } else {
@@ -325,7 +345,8 @@ function wireEvents() {
       }
     }
     saveState();
-    render();
+    updateRowInPlace(rowId);
+    renderSummary();
   });
 
   // Add row
@@ -393,15 +414,22 @@ function wireEvents() {
   configBindings.forEach(([elId, key, type]) => {
     const el = document.getElementById(elId);
     el.addEventListener('input', () => {
-      const val = type === 'number' ? parseFloat(el.value) : el.value;
-      if (type === 'number' && (isNaN(val) || val < 0)) {
-        el.classList.add('invalid');
-        return;
+      let val;
+      if (type === 'number') {
+        const raw = el.value.replace(',', '.');
+        val = parseFloat(raw);
+        if (isNaN(val) || val < 0) {
+          el.classList.add('invalid');
+          return;
+        }
+      } else {
+        val = el.value;
       }
       el.classList.remove('invalid');
       state.config[key] = val;
       saveState();
-      render();
+      state.rows.forEach(r => updateRowInPlace(r.id));
+      renderSummary();
     });
   });
 

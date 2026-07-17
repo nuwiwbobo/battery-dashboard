@@ -59,6 +59,7 @@ h2 { margin: 1rem 0 0.5rem; font-size: 1.1rem; }
 }
 
 input[type="number"],
+input[type="text"],
 select {
   font: inherit;
   padding: 0.25rem 0.5rem;
@@ -111,12 +112,14 @@ button:hover { background: #f0f0f0; }
   top: 0;
 }
 
-#cell-table input[type="number"] {
+#cell-table input[type="number"],
+#cell-table input[type="text"] {
   width: 80px;
   text-align: right;
 }
 
-#cell-table input[type="number"].invalid { border-color: #d33; background: #fee; }
+#cell-table input[type="number"].invalid,
+#cell-table input[type="text"].invalid { border-color: #d33; background: #fee; }
 
 #cell-table select { width: 70px; }
 

@@ -79,3 +79,11 @@ test('mean ignores null/undefined values', () => {
   assert.equal(mean([null, null]), null);
   assert.equal(mean([]), null);
 });
+
+test('comma decimal separator converts to period (Indonesian locale)', () => {
+  // Simulating the input handler: replace ',' with '.' before parseFloat
+  const raw = '2,2338';
+  const normalized = raw.replace(',', '.');
+  const num = parseFloat(normalized);
+  assert.ok(Math.abs(num - 2.2338) < 1e-9, `got ${num}`);
+});
