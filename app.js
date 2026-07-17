@@ -282,6 +282,158 @@ function renderSummary() {
 }
 
 // ====================================================================
+// Event wiring (browser-only)
+// ====================================================================
+
+function wireEvents() {
+  // Cell table inputs (delegated)
+  const tbody = document.getElementById('cell-tbody');
+  tbody.addEventListener('input', (e) => {
+    const target = e.target;
+    if (!target.classList.contains('cell-input')) return;
+    const rowId = parseInt(target.dataset.rowId, 10);
+    const field = target.dataset.field;
+    const row = state.rows.find(r => r.id === rowId);
+    if (!row) return;
+
+    if (field === 'irUnit') {
+      row.irUnit = target.value;
+    } else {
+      const raw = target.value;
+      if (raw === '' || raw === '-') {
+        row[field] = null;
+        target.classList.remove('invalid');
+      } else {
+        const num = parseFloat(raw);
+        if (isNaN(num)) {
+          target.classList.add('invalid');
+          return;
+        }
+        if (field === 'cellVoltage' && (num <= 0 || num > 5)) {
+          target.classList.add('invalid');
+          row[field] = num;
+        } else if (field === 'ir' && num <= 0) {
+          target.classList.add('invalid');
+          row[field] = num;
+        } else if (field === 'rippleVoltage' && num < 0) {
+          target.classList.add('invalid');
+          row[field] = num;
+        } else {
+          target.classList.remove('invalid');
+          row[field] = num;
+        }
+      }
+    }
+    saveState();
+    render();
+  });
+
+  // Add row
+  document.getElementById('add-row-btn').addEventListener('click', () => {
+    const nextId = state.rows.length === 0
+      ? 1
+      : Math.max(...state.rows.map(r => r.id)) + 1;
+    state.rows.push({
+      id: nextId,
+      cellVoltage: null,
+      ir: null,
+      irUnit: 'ohm',
+      rippleVoltage: null,
+    });
+    saveState();
+    render();
+  });
+
+  // Delete selected
+  document.getElementById('delete-selected-btn').addEventListener('click', () => {
+    const selected = Array.from(document.querySelectorAll('.row-select:checked'))
+      .map(cb => parseInt(cb.dataset.rowId, 10));
+    if (selected.length === 0) {
+      showBanner('No rows selected');
+      return;
+    }
+    if (!confirm(`Delete ${selected.length} row(s)?`)) return;
+    state.rows = state.rows.filter(r => !selected.includes(r.id));
+    state.rows.forEach((r, i) => { r.id = i + 1; });
+    saveState();
+    render();
+  });
+
+  // Select all
+  document.getElementById('select-all').addEventListener('click', (e) => {
+    document.querySelectorAll('.row-select').forEach(cb => {
+      cb.checked = e.target.checked;
+    });
+  });
+
+  // Reset all
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    if (!confirm('Clear all data and start fresh?')) return;
+    localStorage.removeItem(STORAGE_KEY);
+    state = {
+      config: { ...DEFAULT_CONFIG },
+      rows: [{ ...SAMPLE_ROW }],
+      banner: null,
+    };
+    render();
+  });
+
+  // Config inputs
+  const configBindings = [
+    ['config-h', 'h', 'number'],
+    ['config-area', 'surfaceArea', 'number'],
+    ['config-rss', 'rssCapacity', 'number'],
+    ['config-tss', 'tssErCapacity', 'number'],
+    ['config-profile', 'capacityProfile', 'string'],
+    ['config-temp-aman', 'tempAmanMax', 'number'],
+    ['config-temp-cek', 'tempCekMax', 'number'],
+    ['config-volt-aman', 'voltAmanMax', 'number'],
+    ['config-volt-cek', 'voltCekMax', 'number'],
+  ];
+  configBindings.forEach(([elId, key, type]) => {
+    const el = document.getElementById(elId);
+    el.addEventListener('input', () => {
+      const val = type === 'number' ? parseFloat(el.value) : el.value;
+      if (type === 'number' && (isNaN(val) || val < 0)) {
+        el.classList.add('invalid');
+        return;
+      }
+      el.classList.remove('invalid');
+      state.config[key] = val;
+      saveState();
+      render();
+    });
+  });
+
+  // Surface area dimension inputs
+  ['config-d1', 'config-d2', 'config-d3'].forEach((elId, idx) => {
+    const key = ['d1', 'd2', 'd3'][idx];
+    const el = document.getElementById(elId);
+    el.addEventListener('input', () => {
+      const val = parseFloat(el.value);
+      if (!isNaN(val) && val >= 0) {
+        state.config.surfaceDims[key] = val;
+        saveState();
+      }
+    });
+  });
+
+  // Apply dimensions → area
+  document.getElementById('apply-dims-btn').addEventListener('click', () => {
+    const { d1, d2, d3 } = state.config.surfaceDims;
+    const area = surfaceArea(d1, d2, d3);
+    if (area == null) {
+      showBanner('Cannot compute area: invalid dimensions');
+      return;
+    }
+    state.config.surfaceArea = area;
+    document.getElementById('config-area').value = area;
+    saveState();
+    render();
+  });
+}
+
+// ====================================================================
 // Bootstrap (browser-only)
 // ====================================================================
 
@@ -289,6 +441,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', () => {
     loadState();
     render();
+    wireEvents();
   });
 }
 
