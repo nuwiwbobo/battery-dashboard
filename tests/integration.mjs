@@ -1,7 +1,6 @@
 // tests/integration.mjs — simulate the actual browser flow
 // Run: ~/.local/node20/bin/node tests/integration.mjs
 
-// Minimal DOM stub
 class Element {
   constructor(tag, id) {
     this.tagName = tag;
@@ -55,81 +54,72 @@ const localStorage = {
 };
 const setTimeout = (fn, ms) => {};
 
-// Load app.js as if it were a script
 const fs = await import('fs');
 const appCode = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-// Strip the bootstrap block (it would try to run on import)
-// Actually, the bootstrap just adds an event listener to DOMContentLoaded, so it should be safe.
-
-// Use a Function constructor to run app.js with our globals
 const wrapped = `(function(document, window, localStorage, setTimeout) {
   ${appCode}
-  return { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig, sohPercent };
+  return { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig, sohPercent, batteryStatus };
 })`;
 const fn = eval(wrapped);
-const { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig, sohPercent } = fn(document, window, localStorage, setTimeout);
+const { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig, sohPercent, batteryStatus } = fn(document, window, localStorage, setTimeout);
 
-// Manually call wireEvents since we don't trigger DOMContentLoaded in the test
 wireEvents();
 
-// Now simulate user flow
 console.log('=== Test 1: Initial state ===');
-console.log('Reference voltage:', state.config.referenceVoltage);
+console.log('batasAtas:', state.config.batasAtas);
+console.log('batasBawah:', state.config.batasBawah);
+console.log('irBaselineRss:', state.config.irBaselineRss);
 
-// Simulate setting a row's voltage
+console.log('\n=== Test 2: Set up a row, verify battery status ===');
 state.rows = [
-  { id: 1, cellVoltage: 1.9, ir: 0.563, irUnit: 'mohm', rippleVoltage: 0.005 },
-  { id: 2, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.05 },
+  { id: 1, cellVoltage: 2.6, ir: 0.0007, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 280, temperature: 25 },
 ];
-
-// Simulate the reference voltage input change
-console.log('\n=== Test 2: User changes reference voltage to 2.25 ===');
-const refInput = document.getElementById('config-reference');
-refInput.value = '2.25';
-console.log('refInput.value before dispatch:', refInput.value);
-console.log('refInput.classList before dispatch:', Array.from(refInput.classList));
-refInput.dispatchEvent({ type: 'input', target: refInput });
-console.log('refInput.value after dispatch:', refInput.value);
-console.log('refInput.classList after dispatch:', Array.from(refInput.classList));
-console.log('State config after input:', state.config.referenceVoltage);
-console.log('Row 1 vDev:', computeRowDerived(state.rows[0], state.config).vDev);
-console.log('Expected row 1 vDev: 1.9 - 2.25 =', 1.9 - 2.25);
-
-const actual = computeRowDerived(state.rows[0], state.config).vDev;
-const expected = 1.9 - 2.25;
-if (Math.abs(actual - expected) > 1e-9) {
-  console.error('FAIL: state.config.referenceVoltage update or compute is broken');
-  process.exit(1);
-} else {
-  console.log('PASS: vDev correctly reflects new reference voltage');
-}
-
-console.log('\n=== Test 3: SOH calculation ===');
-// Simulate setting measured capacity and temperature
-state.rows[0].measuredCapacity = 240;  // 80% of 300 healthy
-state.rows[0].temperature = 25.5;
-const d = computeRowDerived(state.rows[0], state.config);
-console.log('Row 1 SOH:', d.soh, '(expected 80)');
-console.log('Row 1 temperature:', d.temperature, '(expected 25.5)');
-if (Math.abs(d.soh - 80) > 1e-9) {
-  console.error('FAIL: SOH not computed correctly');
+const d1 = computeRowDerived(state.rows[0], state.config);
+console.log('Row 1 status:', d1.status, '(expected Aman: V=2.6 > 2.5, SOH=93.3% > 80%)');
+if (d1.status !== 'Aman') {
+  console.error('FAIL: expected Aman');
   process.exit(1);
 }
-if (d.temperature !== 25.5) {
-  console.error('FAIL: temperature not passed through');
-  process.exit(1);
-}
-console.log('PASS: SOH and temperature work correctly');
 
-console.log('\n=== Test 4: healthyCapacity change updates SOH ===');
-const healthyEl = document.getElementById('config-healthy');
-healthyEl.value = '200';
-healthyEl.dispatchEvent({ type: 'input', target: healthyEl });
+console.log('\n=== Test 3: Change batas atas to 2.7, status should update ===');
+const atasEl = document.getElementById('config-batas-atas');
+atasEl.value = '2.7';
+atasEl.dispatchEvent({ type: 'input', target: atasEl });
 const d2 = computeRowDerived(state.rows[0], state.config);
-console.log('State config healthyCapacity:', state.config.healthyCapacity);
-console.log('Row 1 SOH (240/200):', d2.soh, '(expected 120)');
-if (Math.abs(d2.soh - 120) > 1e-9) {
-  console.error('FAIL: SOH did not update on healthyCapacity change');
+console.log('Row 1 status after batas_atas=2.7:', d2.status, '(V=2.6 now in warning, but IR=0.0007 still OK → OR → Aman)');
+if (d2.status !== 'Aman') {
+  console.error('FAIL: expected Aman (OR of V/IR means one OK is enough)');
   process.exit(1);
 }
-console.log('PASS: SOH updates when healthyCapacity changes');
+
+console.log('\n=== Test 4: Change IR to 0.0010Ω (=1mΩ, >120% of 0.00075=0.0009) ===');
+state.rows[0].ir = 0.0010;
+state.rows[0].irUnit = 'ohm';  // 0.0010 Ω = 1 mΩ
+const d3 = computeRowDerived(state.rows[0], state.config);
+console.log('Row 1 status with IR=1mΩ:', d3.status, '(V warning, IR warning → Cek)');
+if (d3.status !== 'Cek') {
+  console.error('FAIL: expected Cek');
+  process.exit(1);
+}
+
+console.log('\n=== Test 5: Change profile to TSS/ER, IR=0.0010 now < 120% of 0.00085*1.2=0.00102 ===');
+const profileEl = document.getElementById('config-profile');
+profileEl.value = 'TSS/ER';
+profileEl.dispatchEvent({ type: 'change', target: profileEl });
+const d4 = computeRowDerived(state.rows[0], state.config);
+console.log('Row 1 status with TSS/ER profile:', d4.status, '(expected Aman: IR 0.0010 < 0.00102 in TSS/ER, V still warning but IR OK → Aman)');
+if (d4.status !== 'Aman') {
+  console.error('FAIL: expected Aman under TSS/ER baseline');
+  process.exit(1);
+}
+
+console.log('\n=== Test 6: SOH exactly 80% → Cek ===');
+state.rows[0].measuredCapacity = 240;  // 240/300 = 80%
+const d5 = computeRowDerived(state.rows[0], state.config);
+console.log('Row 1 status with SOH=80%:', d5.status, '(expected Cek: SOH=80% is not >80%, defaults to Cek)');
+if (d5.status !== 'Cek') {
+  console.error('FAIL: expected Cek for SOH=80%');
+  process.exit(1);
+}
+
+console.log('\nAll integration tests PASSED');

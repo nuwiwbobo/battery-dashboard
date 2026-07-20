@@ -239,7 +239,7 @@ button:hover {
   font-weight: 700;
 }
 
-.status-ganti {
+.status-tidak-layak {
   background: var(--danger-bg) !important;
   color: var(--danger) !important;
   font-weight: 700;

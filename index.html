@@ -23,15 +23,22 @@
         </select>
       </label>
       <label>
-        Reference voltage (V)
-        <input type="text" inputmode="decimal" id="config-reference">
-      </label>
-      <label>
         Healthy capacity (Ah)
         <input type="text" inputmode="decimal" id="config-healthy">
       </label>
+      <label>
+        Batas atas (V)
+        <input type="text" inputmode="decimal" id="config-batas-atas">
+      </label>
+      <label>
+        Batas bawah (V)
+        <input type="text" inputmode="decimal" id="config-batas-bawah">
+      </label>
       <div class="config-info">
         Over-current threshold: <strong id="oc-threshold">60 A</strong> (capacity / 5)
+      </div>
+      <div class="config-info">
+        IR baseline (active profile): <strong id="ir-baseline">0.75 mΩ</strong>
       </div>
     </div>
   </section>
@@ -54,8 +61,7 @@
             <th>P (W)</th>
             <th>SOH (%)</th>
             <th>Over Current</th>
-            <th>V_dev (V)</th>
-            <th>V Status</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody id="cell-tbody"></tbody>
@@ -71,11 +77,11 @@
     <span>Mean V: <strong id="mean-v">—</strong></span>
     <span>Aman: <strong id="count-aman">0</strong></span>
     <span>Cek: <strong id="count-cek">0</strong></span>
-    <span>Ganti: <strong id="count-ganti">0</strong></span>
+    <span>Tidak Layak: <strong id="count-tidak-layak">0</strong></span>
   </footer>
 
   <div id="banner" hidden></div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

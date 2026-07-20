@@ -1,4 +1,4 @@
-// tests/smoke.mjs — verifies ripple current and power match spreadsheet values
+// tests/smoke.mjs — verifies ripple current, power, and battery status match expected
 // Run: ~/.local/node20/bin/node tests/smoke.mjs
 
 import {
@@ -6,7 +6,7 @@ import {
   dissipatedPower,
   sohPercent,
   overCurrentDecision,
-  voltageStatus,
+  batteryStatus,
   mean,
   normalizeIrOhms,
 } from '../app.js';
@@ -36,27 +36,24 @@ const SAMPLE_ROWS = [
 const CONFIG = {
   rssCapacity: 300,
   healthyCapacity: 300,
-  referenceVoltage: 2.2,
-  voltAmanMax: 0.05,
-  voltCekMax: 0.1,
+  batasAtas: 2.5,
+  batasBawah: 2.0,
+  irBaselineRss: 0.00075,
 };
 
 let passed = 0;
 let failed = 0;
-const failures = [];
 
 SAMPLE_ROWS.forEach((row) => {
   const irOhms = normalizeIrOhms(row.ir, row.irUnit);
   const iRipple = rippleCurrent(row.rippleVoltage, irOhms);
   const power = dissipatedPower(row.rippleVoltage, irOhms);
   const overCurrent = overCurrentDecision(iRipple, CONFIG.rssCapacity);
-  const vDev = row.cellVoltage - CONFIG.referenceVoltage;
-  const vStatus = voltageStatus(Math.abs(vDev), CONFIG.voltAmanMax, CONFIG.voltCekMax);
   const soh = sohPercent(row.measuredCapacity, CONFIG.healthyCapacity);
+  const status = batteryStatus(row.cellVoltage, irOhms, soh, CONFIG.batasAtas, CONFIG.batasBawah, CONFIG.irBaselineRss);
 
-  if (overCurrent === null || vStatus === null || soh === null) {
+  if (overCurrent === null || soh === null || status === null) {
     failed++;
-    failures.push({ id: row.id, error: 'null decision' });
   } else {
     passed++;
   }
@@ -69,23 +66,21 @@ SAMPLE_ROWS.forEach((row) => {
   const iRipple = rippleCurrent(row.rippleVoltage, irOhms);
   const power = dissipatedPower(row.rippleVoltage, irOhms);
   const overCurrent = overCurrentDecision(iRipple, CONFIG.rssCapacity);
-  const vDev = row.cellVoltage - CONFIG.referenceVoltage;
-  const vStatus = voltageStatus(Math.abs(vDev), CONFIG.voltAmanMax, CONFIG.voltCekMax);
   const soh = sohPercent(row.measuredCapacity, CONFIG.healthyCapacity);
+  const status = batteryStatus(row.cellVoltage, irOhms, soh, CONFIG.batasAtas, CONFIG.batasBawah, CONFIG.irBaselineRss);
   console.log(
     `Row ${String(row.id).padStart(2)}: ` +
     `I=${iRipple.toFixed(2).padStart(8)}A  ` +
     `P=${power.toFixed(4).padStart(7)}W  ` +
     `OC=${(overCurrent ? 'TRUE ' : 'FALSE')}  ` +
     `SOH=${soh.toFixed(1).padStart(5)}%  ` +
-    `Vdev=${vDev.toFixed(4).padStart(7)}  ` +
-    `V=${(vStatus ?? '—').padEnd(6)}`
+    `Status=${(status ?? '—').padEnd(13)}`
   );
 });
 
 if (failed > 0) {
-  console.error(`\nFAIL: ${failed} rows had null decisions`);
+  console.error(`\nFAIL: ${failed} rows had null results`);
   process.exit(1);
 } else {
-  console.log('\nAll 19 rows compute valid SOH, overCurrent, and V_status.');
+  console.log('\nAll 19 rows compute valid SOH, overCurrent, and battery status.');
 }

@@ -5,7 +5,7 @@ import {
   dissipatedPower,
   sohPercent,
   overCurrentDecision,
-  voltageStatus,
+  batteryStatus,
   mean,
   normalizeIrOhms,
 } from '../app.js';
@@ -38,13 +38,6 @@ test('overCurrentDecision: sheet FALSE cases', () => {
   assert.equal(overCurrentDecision(8.88, 300), false);
 });
 
-test('voltageStatus boundaries', () => {
-  assert.equal(voltageStatus(0.04, 0.05, 0.1), 'Aman');
-  assert.equal(voltageStatus(0.05, 0.05, 0.1), 'Cek');
-  assert.equal(voltageStatus(0.10, 0.05, 0.1), 'Ganti');
-  assert.equal(voltageStatus(0.11, 0.05, 0.1), 'Ganti');
-});
-
 test('normalizeIrOhms: mΩ → Ω', () => {
   assert.equal(normalizeIrOhms(563, 'mohm'), 0.563);
   assert.equal(normalizeIrOhms(0.563, 'ohm'), 0.563);
@@ -69,27 +62,17 @@ test('comma decimal separator converts to period (Indonesian locale)', () => {
 });
 
 test('overCurrentDecision changes with capacity profile', () => {
-  assert.equal(overCurrentDecision(50, 300), false, '50A should be FALSE at RSS 300Ah');
-  assert.equal(overCurrentDecision(50, 200), true, '50A should be TRUE at TSS/ER 200Ah');
-  assert.equal(overCurrentDecision(40, 200), false, '40A is exactly C/5, not exceeding');
-  assert.equal(overCurrentDecision(40.0001, 200), true, '40.0001A exceeds C/5');
-  assert.equal(overCurrentDecision(60, 300), false, '60A is exactly C/5 for RSS');
-  assert.equal(overCurrentDecision(60.0001, 300), true, '60.0001A exceeds C/5 for RSS');
-});
-
-test('voltageStatus uses absolute deviation from reference', () => {
-  assert.equal(voltageStatus(0.04, 0.05, 0.1), 'Aman');
-  assert.equal(voltageStatus(0.05, 0.05, 0.1), 'Cek');
-  assert.equal(voltageStatus(0.10, 0.05, 0.1), 'Ganti');
-  assert.equal(voltageStatus(0.20, 0.05, 0.1), 'Ganti');
+  assert.equal(overCurrentDecision(50, 300), false);
+  assert.equal(overCurrentDecision(50, 200), true);
+  assert.equal(overCurrentDecision(40, 200), false);
+  assert.equal(overCurrentDecision(40.0001, 200), true);
+  assert.equal(overCurrentDecision(60, 300), false);
+  assert.equal(overCurrentDecision(60.0001, 300), true);
 });
 
 test('sohPercent: standard cases', () => {
-  // New cell: measured == healthy → 100%
   assert.ok(Math.abs(sohPercent(300, 300) - 100) < 1e-9);
-  // 80% SOH (typical end-of-life threshold)
   assert.ok(Math.abs(sohPercent(240, 300) - 80) < 1e-9);
-  // 50% SOH
   assert.ok(Math.abs(sohPercent(150, 300) - 50) < 1e-9);
 });
 
@@ -99,4 +82,64 @@ test('sohPercent: handles invalid inputs', () => {
   assert.equal(sohPercent(300, 0), null);
   assert.equal(sohPercent(NaN, 300), null);
   assert.equal(sohPercent(300, NaN), null);
+});
+
+// batteryStatus tests
+const cfg = { batasAtas: 2.5, batasBawah: 2.0, irBaselineRss: 0.00075, irBaselineTssEr: 0.00085 };
+
+test('batteryStatus: Aman — SOH>80% AND V>batas_atas', () => {
+  // 2.6V (>2.5), 85% SOH, IR 0.0007 (< 0.00075*1.2 = 0.0009)
+  assert.equal(batteryStatus(2.6, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
+});
+
+test('batteryStatus: Aman — SOH>80% AND IR<120% baseline (even with V in warning range)', () => {
+  // 2.3V (between 2.0 and 2.5), 85% SOH, IR 0.0007 (< 0.0009)
+  assert.equal(batteryStatus(2.3, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
+});
+
+test('batteryStatus: Tidak Layak — V < batas_bawah AND SOH<80%', () => {
+  assert.equal(batteryStatus(1.9, 0.0007, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+});
+
+test('batteryStatus: Tidak Layak — IR > 150% baseline AND SOH<80% (V in OK range)', () => {
+  // 150% of 0.00075 = 0.001125. V=2.6 (>2.5, OK), IR=0.0012 (> 0.001125, bad), SOH=75 (<80) → Tidak Layak
+  assert.equal(batteryStatus(2.6, 0.0012, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+});
+
+test('batteryStatus: Cek — V in warning range AND SOH<80%', () => {
+  // 2.3V (between 2.0 and 2.5), 75% SOH, IR ok
+  assert.equal(batteryStatus(2.3, 0.0007, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus: Cek — IR 120-150% baseline AND SOH<80%', () => {
+  // IR 0.0010 (between 0.0009 and 0.001125), 75% SOH, V ok
+  assert.equal(batteryStatus(2.6, 0.0010, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus: SOH exactly 80% defaults to Cek', () => {
+  assert.equal(batteryStatus(2.6, 0.0007, 80, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus: SOH<80% with V and IR both in OK range → Cek (gate fails)', () => {
+  assert.equal(batteryStatus(2.6, 0.0007, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus: TSS/ER profile uses different IR baseline', () => {
+  // TSS/ER baseline is 0.00085, 120% = 0.00102, 150% = 0.001275
+  // IR 0.0010 is < 0.00102 → Aman-eligible on IR, V also good → Aman
+  assert.equal(batteryStatus(2.6, 0.0010, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineTssEr), 'Aman');
+  // Same IR but RSS profile: 0.0010 > 0.0009 (RSS 120%) → IR warning, SOH<80% → Cek
+  assert.equal(batteryStatus(2.6, 0.0010, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus: null inputs return null', () => {
+  assert.equal(batteryStatus(null, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), null);
+  assert.equal(batteryStatus(2.6, null, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), null);
+  assert.equal(batteryStatus(2.6, 0.0007, null, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), null);
+  assert.equal(batteryStatus(2.6, 0.0007, 85, null, cfg.batasBawah, cfg.irBaselineRss), null);
+  assert.equal(batteryStatus(2.6, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, null), null);
+});
+
+test('batteryStatus: invalid config (atas <= bawah) returns null', () => {
+  assert.equal(batteryStatus(2.3, 0.0007, 85, 2.0, 2.5, cfg.irBaselineRss), null);
 });

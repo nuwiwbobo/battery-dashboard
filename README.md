@@ -1,15 +1,16 @@
 # Battery Cell Monitoring Dashboard
 
-Single-page HTML/JS/CSS tool for monitoring battery cell health. Mirrors the calculation logic of an existing battery monitoring spreadsheet.
+Single-page HTML/JS/CSS tool for monitoring battery cell health.
 
 ## Features
 
 - **Per-cell input:** Cell voltage, internal resistance (Ω or mΩ), ripple voltage (V rms), measured capacity (Ah), temperature (°C)
 - **Live calculations:** Ripple current, dissipated power, SOH (state of health) percentage
-- **Decision flags:**
-  - **Over Current** — TRUE if ripple current exceeds battery capacity / 5
-  - **V Status** — `Aman` (|dev| < 0.05V), `Cek` (0.05–0.1V), `Ganti` (> 0.1V) deviation from reference voltage
-- **Configurable:** Capacity profile (RSS/TSS/ER), reference voltage, healthy capacity
+- **Decision flag:** Combined **Status** = `Aman` / `Cek` / `Tidak Layak` based on:
+  - **SOH** (measured / healthy capacity) must be > 80% to be Aman
+  - **AND (cell voltage OR internal resistance)** — if either is in the OK range, that sub-check passes
+- **Per-profile IR baselines:** RSS = 0.75 mΩ, TSS/ER = 0.85 mΩ (120% / 150% thresholds)
+- **Configurable:** Capacity profile (RSS/TSS/ER), healthy capacity, voltage thresholds (batas atas/bawah)
 - **Auto-save:** State persists to `localStorage` on every change
 - **Offline:** No network, no CDN, no build step
 
@@ -25,13 +26,37 @@ Single-page HTML/JS/CSS tool for monitoring battery cell health. Mirrors the cal
 
 | Field | Default | Description |
 |---|---|---|
-| Capacity profile | RSS | Which capacity to use for over-current check (RSS=300Ah, TSS/ER=200Ah) |
-| Reference voltage | 2.2 V | Each cell's voltage is compared against this fixed value to compute V_dev and V_status |
-| Healthy capacity | 300 Ah | The "new" / maximum capacity used as the denominator for SOH calculation |
+| Capacity profile | RSS | Switches between RSS (300Ah) and TSS/ER (200Ah) battery profiles; also selects which IR baseline to use |
+| Healthy capacity | 300 Ah | Denominator for SOH = measured/healthy × 100% |
+| Batas atas (V) | 2.5 V | Upper voltage threshold. V > batas_atas = OK |
+| Batas bawah (V) | 2.0 V | Lower voltage threshold. V ≤ batas_bawah = bad |
 
 Hardcoded defaults (not editable in v1):
-- Volt Aman max = 0.05 V
-- Volt Cek max = 0.1 V
+- IR baseline RSS: 0.75 mΩ
+- IR baseline TSS/ER: 0.85 mΩ
+
+## Status Decision Logic
+
+For each cell, the status is computed as:
+
+```
+SOH = (measured_capacity / healthy_capacity) × 100
+
+voltage_ok      = V > batas_atas
+voltage_warning = batas_bawah < V ≤ batas_atas
+voltage_bad     = V ≤ batas_bawah
+
+ir_ok      = IR < 120% × baseline
+ir_warning = 120% × baseline ≤ IR ≤ 150% × baseline
+ir_bad     = IR > 150% × baseline
+
+if (SOH > 80) AND (voltage_ok OR ir_ok):         status = Aman
+elif (voltage_warning OR ir_warning):             status = Cek
+elif (voltage_bad OR ir_bad):                     status = Tidak Layak
+else:                                              status = Cek   (SOH ≤ 80% defaults here)
+```
+
+The summary footer shows counts of each status across all rows.
 
 ## Calculation Formulas
 
@@ -39,14 +64,10 @@ Hardcoded defaults (not editable in v1):
 - **Dissipated power (W):** `P = V_ripple² / IR`
 - **SOH (%):** `(measured_capacity / healthy_capacity) × 100`
 - **Over current:** `TRUE if I_ripple > capacity / 5`
-- **Voltage deviation:** `cell_voltage − reference_voltage`
-- **V status:** `Aman if |dev| < 0.05`, `Cek if 0.05 ≤ |dev| < 0.1`, `Ganti if |dev| ≥ 0.1`
-
-> **Note:** Temperature is now entered manually per cell. Earlier versions calculated a predicted temperature rise from dissipated power and surface area; that logic has been removed and the temp prediction code is preserved as comments in `app.js` if needed in the future.
 
 ## IR Unit Handling
 
-Each row has a unit dropdown (`Ω` or `mΩ`). The dashboard defaults to **mΩ** because typical Li-ion cell internal resistance is in the 20–100 mΩ range, and the reference spreadsheet's "IR (in ohm)" column actually contains mΩ values.
+Each row has a unit dropdown (`Ω` or `mΩ`). The dashboard defaults to **mΩ** because typical Li-ion cell internal resistance is in the 20–100 mΩ range.
 
 ## Tests
 
@@ -56,9 +77,9 @@ node tests/smoke.mjs
 node tests/integration.mjs
 ```
 
-- `test.mjs` — 14 unit tests for pure calc functions
-- `smoke.mjs` — runs all 19 sample rows from the reference spreadsheet
-- `integration.mjs` — simulates browser flow (state, render, event wiring)
+- `test.mjs` — 23 unit tests for pure calc functions
+- `smoke.mjs` — runs all 19 sample rows
+- `integration.mjs` — simulates browser flow
 
 No dependencies required.
 
@@ -70,15 +91,15 @@ battery-dashboard/
 ├── style.css       # Layout, status colors
 ├── app.js          # Calc functions, state, render, event wiring
 ├── tests/
-│   ├── test.mjs        # Unit tests
-│   ├── smoke.mjs       # Spreadsheet cross-check (19 rows)
-│   └── integration.mjs # Browser flow simulation
+│   ├── test.mjs
+│   ├── smoke.mjs
+│   └── integration.mjs
 └── README.md
 ```
 
 ## Known Limitations (v1)
 
 - Single-user, single-machine (no cloud sync, no multi-user)
-- No file import/export (CSV/XLSX)
+- No file import/export
 - No time-series / historical tracking
 - Desktop browser only
