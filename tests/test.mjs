@@ -8,6 +8,8 @@ import {
   batteryStatus,
   mean,
   normalizeIrOhms,
+  tempClass,
+  renderRowHTML,
 } from '../app.js';
 
 test('rippleCurrent matches spreadsheet row 1', () => {
@@ -183,4 +185,96 @@ test('batteryStatus priority: V ok + IR ok + SOH=50% → Cek (SOH<80% defaults C
 test('batteryStatus priority: V ok + IR bad + SOH=50% → Tidak Layak (IR bad wins over SOH<80% Cek default)', () => {
   // SOH<80% would default to Cek, but IR bad escalates to Tidak Layak
   assert.equal(batteryStatus(2.6, 0.0012, 50, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+});
+
+// ====================================================================
+// tempClass helper (Feature 2: temperature color coding)
+// ====================================================================
+
+test('tempClass: returns temp-bad for temp >= 30', () => {
+  assert.equal(tempClass(30), 'temp-bad');
+  assert.equal(tempClass(35.5), 'temp-bad');
+  assert.equal(tempClass(50), 'temp-bad');
+  assert.equal(tempClass(100), 'temp-bad');
+});
+
+test('tempClass: returns temp-warn for 25 < temp < 30', () => {
+  assert.equal(tempClass(25.1), 'temp-warn');
+  assert.equal(tempClass(27), 'temp-warn');
+  assert.equal(tempClass(29), 'temp-warn');
+  assert.equal(tempClass(29.99), 'temp-warn');
+});
+
+test('tempClass: returns empty for temp <= 25', () => {
+  assert.equal(tempClass(25), '');
+  assert.equal(tempClass(20), '');
+  assert.equal(tempClass(0), '');
+  assert.equal(tempClass(-10), '');
+});
+
+test('tempClass: returns empty for null, undefined, NaN', () => {
+  assert.equal(tempClass(null), '');
+  assert.equal(tempClass(undefined), '');
+  assert.equal(tempClass(NaN), '');
+});
+
+test('tempClass: returns empty for non-numeric strings (defensive)', () => {
+  // parseFloat('abc') is NaN; treated like null/NaN
+  assert.equal(tempClass('not a number'), '');
+});
+
+// ====================================================================
+// renderRowHTML helper (extracted from renderTable; applies temp class)
+// ====================================================================
+
+const ROW_HTML_CONFIG = {
+  rssCapacity: 300,
+  tssErCapacity: 200,
+  capacityProfile: 'RSS',
+  healthyCapacity: 300,
+  batasAtas: 2.5,
+  batasBawah: 2.0,
+  irBaselineRss: 0.00075,
+  irBaselineTssEr: 0.00085,
+};
+
+test('renderRowHTML: temp-warn class for temperature 27', () => {
+  const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 27 };
+  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  assert.ok(html.includes('temp-warn'), `expected temp-warn in row HTML, got: ${html}`);
+  assert.ok(!html.includes('temp-bad'), `expected no temp-bad, got: ${html}`);
+  assert.ok(html.includes('value="27"'), `expected value="27", got: ${html}`);
+});
+
+test('renderRowHTML: temp-bad class for temperature 30', () => {
+  const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 30 };
+  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  assert.ok(html.includes('temp-bad'), `expected temp-bad in row HTML, got: ${html}`);
+  assert.ok(!html.includes('temp-warn'), `expected no temp-warn, got: ${html}`);
+});
+
+test('renderRowHTML: no temp class for temperature 25', () => {
+  const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
+  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  assert.ok(!html.includes('temp-warn'), `expected no temp-warn for 25, got: ${html}`);
+  assert.ok(!html.includes('temp-bad'), `expected no temp-bad for 25, got: ${html}`);
+  // Locate the temp input element and check its class attribute
+  const inputMatch = html.match(/<input[^>]*data-field="temperature"[^>]*>/);
+  assert.ok(inputMatch, 'temp input found in HTML');
+  assert.ok(inputMatch[0].includes('class="cell-input"'), 'class is exactly "cell-input" (no extra)');
+});
+
+test('renderRowHTML: no temp class for null temperature', () => {
+  const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: null };
+  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  assert.ok(!html.includes('temp-warn'), `expected no temp-warn for null, got: ${html}`);
+  assert.ok(!html.includes('temp-bad'), `expected no temp-bad for null, got: ${html}`);
+});
+
+test('renderRowHTML: includes data-row-id and data-field attributes', () => {
+  const row = { id: 42, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
+  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  assert.ok(html.includes('data-row-id="42"'), `expected data-row-id="42" in HTML`);
+  assert.ok(html.includes('data-field="cellVoltage"'));
+  assert.ok(html.includes('data-field="temperature"'));
 });

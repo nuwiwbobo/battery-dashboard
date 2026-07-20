@@ -1,6 +1,6 @@
 'use strict';
 
-// Build: 2026-07-20-r5 (worst-of-V/IR priority, then SOH gate)
+// Build: 2026-07-20-r6 (districts + temp color coding)
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -121,6 +121,8 @@ function mean(arr) {
 
 const STORAGE_KEY = 'battery-dashboard-state-v1';
 
+const DEFAULT_DISTRICT_NAME = 'Default';
+
 const DEFAULT_CONFIG = {
   rssCapacity: 300,
   tssErCapacity: 200,
@@ -145,8 +147,40 @@ const SAMPLE_ROW = {
 let state = {
   config: { ...DEFAULT_CONFIG },
   rows: [{ ...SAMPLE_ROW }],
+  districts: [
+    { id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] },
+  ],
   banner: null,
 };
+
+function nextRowId() {
+  return state.rows.length === 0
+    ? 1
+    : Math.max(...state.rows.map(r => r.id)) + 1;
+}
+
+function nextDistrictId() {
+  return state.districts.length === 0
+    ? 1
+    : Math.max(...state.districts.map(d => d.id)) + 1;
+}
+
+function getRowsForDistrict(district) {
+  if (!district) return [];
+  return district.rowIds
+    .map(id => state.rows.find(r => r.id === id))
+    .filter(r => r != null);
+}
+
+function escapeHTML(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function loadState() {
   try {
@@ -155,6 +189,42 @@ function loadState() {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') throw new Error('invalid shape');
     if (!parsed.config || !Array.isArray(parsed.rows)) throw new Error('missing fields');
+    const rows = parsed.rows.map((r, i) => ({
+      id: i + 1,
+      cellVoltage: r.cellVoltage ?? null,
+      ir: r.ir ?? null,
+      irUnit: r.irUnit === 'mohm' ? 'mohm' : 'ohm',
+      rippleVoltage: r.rippleVoltage ?? null,
+      measuredCapacity: (typeof r.measuredCapacity === 'number' && !isNaN(r.measuredCapacity)) ? r.measuredCapacity : null,
+      temperature: (typeof r.temperature === 'number' && !isNaN(r.temperature)) ? r.temperature : null,
+    }));
+
+    let districts = [];
+    if (Array.isArray(parsed.districts) && parsed.districts.length > 0) {
+      districts = parsed.districts.map((d, i) => ({
+        id: (typeof d.id === 'number' && !isNaN(d.id)) ? d.id : i + 1,
+        name: (typeof d.name === 'string' && d.name.length > 0) ? d.name : `District ${i + 1}`,
+        rowIds: Array.isArray(d.rowIds)
+          ? d.rowIds.filter(id => rows.some(r => r.id === id))
+          : [],
+      }));
+    }
+
+    if (districts.length === 0) {
+      districts.push({
+        id: 1,
+        name: DEFAULT_DISTRICT_NAME,
+        rowIds: rows.map(r => r.id),
+      });
+    } else {
+      const assigned = new Set();
+      districts.forEach(d => d.rowIds.forEach(id => assigned.add(id)));
+      const unassigned = rows.filter(r => !assigned.has(r.id));
+      if (unassigned.length > 0) {
+        districts[0].rowIds.push(...unassigned.map(r => r.id));
+      }
+    }
+
     state = {
       config: {
         ...DEFAULT_CONFIG,
@@ -169,15 +239,8 @@ function loadState() {
           ? parsed.config.batasBawah
           : DEFAULT_CONFIG.batasBawah,
       },
-      rows: parsed.rows.map((r, i) => ({
-        id: i + 1,
-        cellVoltage: r.cellVoltage ?? null,
-        ir: r.ir ?? null,
-        irUnit: r.irUnit === 'mohm' ? 'mohm' : 'ohm',
-        rippleVoltage: r.rippleVoltage ?? null,
-        measuredCapacity: (typeof r.measuredCapacity === 'number' && !isNaN(r.measuredCapacity)) ? r.measuredCapacity : null,
-        temperature: (typeof r.temperature === 'number' && !isNaN(r.temperature)) ? r.temperature : null,
-      })),
+      rows,
+      districts,
       banner: null,
     };
   } catch (err) {
@@ -186,6 +249,7 @@ function loadState() {
     state = {
       config: { ...DEFAULT_CONFIG },
       rows: [{ ...SAMPLE_ROW }],
+      districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
       banner: null,
     };
   }
@@ -196,6 +260,7 @@ function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       config: state.config,
       rows: state.rows,
+      districts: state.districts,
     }));
   } catch (err) {
     if (err.name === 'QuotaExceededError') {
@@ -270,8 +335,7 @@ function formatNumber(n, digits = 4) {
 
 function render() {
   renderConfig();
-  renderTable();
-  renderSummary();
+  renderDistricts();
 }
 
 function renderConfig() {
@@ -305,15 +369,26 @@ function updateBaselineDisplay() {
   el.textContent = `${(baseline * 1000).toFixed(2)} mΩ`;
 }
 
-function renderTable() {
-  const tbody = document.getElementById('cell-tbody');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  state.rows.forEach(row => {
-    const d = computeRowDerived(row, state.config);
-    const tr = document.createElement('tr');
-    tr.dataset.rowId = row.id;
-    tr.innerHTML = `
+function statusClass(status) {
+  if (status === 'Aman') return 'status-aman';
+  if (status === 'Cek') return 'status-cek';
+  if (status === 'Tidak Layak') return 'status-tidak-layak';
+  return '';
+}
+
+function tempClass(t) {
+  if (t == null || isNaN(t)) return '';
+  if (t >= 30) return 'temp-bad';
+  if (t > 25) return 'temp-warn';
+  return '';
+}
+
+function renderRowHTML(row, config) {
+  const d = computeRowDerived(row, config);
+  const tempCls = tempClass(row.temperature);
+  const tempClassAttr = tempCls ? ' ' + tempCls : '';
+  return `
+    <tr data-row-id="${row.id}">
       <td><input type="checkbox" class="row-select" data-row-id="${row.id}"></td>
       <td>${row.id}</td>
       <td><input type="text" inputmode="decimal" class="cell-input" data-field="cellVoltage" data-row-id="${row.id}" value="${row.cellVoltage ?? ''}"></td>
@@ -326,32 +401,96 @@ function renderTable() {
       </td>
       <td><input type="text" inputmode="decimal" class="cell-input" data-field="rippleVoltage" data-row-id="${row.id}" value="${row.rippleVoltage ?? ''}"></td>
       <td><input type="text" inputmode="decimal" class="cell-input" data-field="measuredCapacity" data-row-id="${row.id}" value="${row.measuredCapacity ?? ''}"></td>
-      <td><input type="text" inputmode="decimal" class="cell-input" data-field="temperature" data-row-id="${row.id}" value="${row.temperature ?? ''}"></td>
+      <td><input type="text" inputmode="decimal" class="cell-input${tempClassAttr}" data-field="temperature" data-row-id="${row.id}" value="${row.temperature ?? ''}"></td>
       <td class="derived">${formatNumber(d.iRipple, 4)}</td>
       <td class="derived">${formatNumber(d.power, 6)}</td>
       <td class="derived">${d.soh == null ? '—' : d.soh.toFixed(2) + '%'}</td>
       <td class="derived ${d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : ''}">${d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE'}</td>
       <td class="derived ${statusClass(d.status)}">${d.status ?? '—'}</td>
-    `;
-    tbody.appendChild(tr);
-  });
+    </tr>
+  `;
 }
 
-function statusClass(status) {
-  if (status === 'Aman') return 'status-aman';
-  if (status === 'Cek') return 'status-cek';
-  if (status === 'Tidak Layak') return 'status-tidak-layak';
-  return '';
+function renderDistrictSummaryHTML(district) {
+  const districtRows = getRowsForDistrict(district);
+  const voltages = districtRows.map(r => r.cellVoltage).filter(v => v != null && !isNaN(v));
+  const meanV = mean(voltages);
+  let aman = 0, cek = 0, tidakLayak = 0;
+  districtRows.forEach(row => {
+    const d = computeRowDerived(row, state.config);
+    if (d.status === 'Aman') aman++;
+    else if (d.status === 'Cek') cek++;
+    else if (d.status === 'Tidak Layak') tidakLayak++;
+  });
+  return `
+    <div class="district-summary">
+      <span>Mean V: <strong>${formatNumber(meanV, 4)}</strong></span>
+      <span>Aman: <strong>${aman}</strong></span>
+      <span>Cek: <strong>${cek}</strong></span>
+      <span>Tidak Layak: <strong>${tidakLayak}</strong></span>
+    </div>
+  `;
+}
+
+function renderDistrictHTML(district) {
+  const districtRows = getRowsForDistrict(district);
+  const tableRowsHTML = districtRows.map(row => renderRowHTML(row, state.config)).join('');
+  return `
+    <div class="district" data-district-id="${district.id}">
+      <div class="district-header">
+        <h3 class="district-name" contenteditable="true" data-district-id="${district.id}">${escapeHTML(district.name)}</h3>
+        <button type="button" class="district-delete-btn" data-district-id="${district.id}">Delete district</button>
+      </div>
+      ${renderDistrictSummaryHTML(district)}
+      <div class="table-wrapper">
+        <table class="cell-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>#</th>
+              <th>Cell V (V)</th>
+              <th>IR</th>
+              <th>Unit</th>
+              <th>V_ripple (V rms)</th>
+              <th>Measured Cap (Ah)</th>
+              <th>Temp (°C)</th>
+              <th>I_ripple (A rms)</th>
+              <th>P (W)</th>
+              <th>SOH (%)</th>
+              <th>Over Current</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>${tableRowsHTML}</tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" class="add-row-btn" data-district-id="${district.id}">+ Add row</button>
+        <button type="button" class="delete-selected-btn" data-district-id="${district.id}">Delete selected</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDistricts() {
+  const container = document.getElementById('districts-container');
+  if (!container) return;
+  container.innerHTML = state.districts.map(renderDistrictHTML).join('');
 }
 
 function updateRowInPlace(rowId) {
   const row = state.rows.find(r => r.id === rowId);
   if (!row) return;
-  const tr = document.querySelector(`#cell-tbody tr[data-row-id="${rowId}"]`);
+  const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
   if (!tr) return;
   const d = computeRowDerived(row, state.config);
   const cells = tr.querySelectorAll('td');
   if (cells.length < 13) return;
+  const tempInput = cells[7].querySelector('input');
+  if (tempInput) {
+    tempInput.value = row.temperature ?? '';
+    tempInput.className = 'cell-input ' + tempClass(row.temperature);
+  }
   cells[8].textContent = formatNumber(d.iRipple, 4);
   cells[9].textContent = formatNumber(d.power, 6);
   cells[10].textContent = d.soh == null ? '—' : d.soh.toFixed(2) + '%';
@@ -361,21 +500,85 @@ function updateRowInPlace(rowId) {
   cells[12].textContent = d.status ?? '—';
 }
 
-function renderSummary() {
-  const voltages = state.rows.map(r => r.cellVoltage).filter(v => v != null && !isNaN(v));
-  const meanV = mean(voltages);
-  document.getElementById('mean-v').textContent = formatNumber(meanV, 4);
+function updateDistrictSummaryInPlace(districtId) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return;
+  const section = document.querySelector(`.district[data-district-id="${districtId}"] .district-summary`);
+  if (!section) return;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = renderDistrictSummaryHTML(district);
+  section.replaceWith(wrap.firstElementChild);
+}
 
-  let aman = 0, cek = 0, tidakLayak = 0;
-  state.rows.forEach(row => {
-    const d = computeRowDerived(row, state.config);
-    if (d.status === 'Aman') aman++;
-    else if (d.status === 'Cek') cek++;
-    else if (d.status === 'Tidak Layak') tidakLayak++;
+// ====================================================================
+// District CRUD (browser-only; mutates state, persists, re-renders)
+// ====================================================================
+
+function addDistrict() {
+  const newId = nextDistrictId();
+  state.districts.push({
+    id: newId,
+    name: `District ${newId}`,
+    rowIds: [],
   });
-  document.getElementById('count-aman').textContent = aman;
-  document.getElementById('count-cek').textContent = cek;
-  document.getElementById('count-tidak-layak').textContent = tidakLayak;
+  saveState();
+  renderDistricts();
+}
+
+function addRowToDistrict(districtId) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return;
+  const newRow = {
+    id: nextRowId(),
+    cellVoltage: null,
+    ir: null,
+    irUnit: 'mohm',
+    rippleVoltage: null,
+    measuredCapacity: null,
+    temperature: null,
+  };
+  state.rows.push(newRow);
+  district.rowIds.push(newRow.id);
+  saveState();
+  renderDistricts();
+}
+
+function deleteSelectedInDistrict(districtId) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return;
+  const selected = Array.from(
+    document.querySelectorAll(`.district[data-district-id="${districtId}"] .row-select:checked`)
+  ).map(cb => parseInt(cb.dataset.rowId, 10));
+  if (selected.length === 0) {
+    showBanner('No rows selected');
+    return;
+  }
+  if (!confirm(`Delete ${selected.length} row(s)?`)) return;
+  state.rows = state.rows.filter(r => !selected.includes(r.id));
+  district.rowIds = district.rowIds.filter(id => !selected.includes(id));
+  saveState();
+  renderDistricts();
+}
+
+function deleteDistrict(districtId) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return;
+  if (!confirm(`Delete district "${district.name}" and all its rows?`)) return;
+  const idsToRemove = new Set(district.rowIds);
+  state.rows = state.rows.filter(r => !idsToRemove.has(r.id));
+  state.districts = state.districts.filter(d => d.id !== districtId);
+  saveState();
+  renderDistricts();
+}
+
+function renameDistrict(districtId, newName) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return;
+  const trimmed = (newName || '').trim();
+  if (trimmed.length === 0) return;
+  if (trimmed === district.name) return;
+  district.name = trimmed;
+  saveState();
 }
 
 // ====================================================================
@@ -383,94 +586,88 @@ function renderSummary() {
 // ====================================================================
 
 function wireEvents() {
-  // Cell table inputs (delegated)
-  const tbody = document.getElementById('cell-tbody');
-  tbody.addEventListener('input', (e) => {
-    const target = e.target;
-    if (!target.classList.contains('cell-input')) return;
-    const rowId = parseInt(target.dataset.rowId, 10);
-    const field = target.dataset.field;
-    const row = state.rows.find(r => r.id === rowId);
-    if (!row) return;
+  // Cell table inputs (delegated on districts container)
+  const container = document.getElementById('districts-container');
+  if (container) {
+    container.addEventListener('input', (e) => {
+      const target = e.target;
+      if (!target.classList || !target.classList.contains('cell-input')) return;
+      const rowId = parseInt(target.dataset.rowId, 10);
+      const field = target.dataset.field;
+      const row = state.rows.find(r => r.id === rowId);
+      if (!row) return;
 
-    if (field === 'irUnit') {
-      row.irUnit = target.value;
-    } else {
-      const raw = target.value.replace(',', '.');
-      if (raw === '' || raw === '-' || raw === '.') {
-        row[field] = null;
-        target.classList.remove('invalid');
+      if (field === 'irUnit') {
+        row.irUnit = target.value;
       } else {
-        const num = parseFloat(raw);
-        if (isNaN(num)) {
-          target.classList.add('invalid');
-          return;
-        }
-        if (field === 'cellVoltage' && (num <= 0 || num > 5)) {
-          target.classList.add('invalid');
-          row[field] = num;
-        } else if (field === 'ir' && num <= 0) {
-          target.classList.add('invalid');
-          row[field] = num;
-        } else if (field === 'rippleVoltage' && num < 0) {
-          target.classList.add('invalid');
-          row[field] = num;
-        } else if (field === 'measuredCapacity' && num < 0) {
-          target.classList.add('invalid');
-          row[field] = num;
-        } else if (field === 'temperature') {
+        const raw = target.value.replace(',', '.');
+        if (raw === '' || raw === '-' || raw === '.') {
+          row[field] = null;
           target.classList.remove('invalid');
-          row[field] = num;
         } else {
-          target.classList.remove('invalid');
-          row[field] = num;
+          const num = parseFloat(raw);
+          if (isNaN(num)) {
+            target.classList.add('invalid');
+            return;
+          }
+          if (field === 'cellVoltage' && (num <= 0 || num > 5)) {
+            target.classList.add('invalid');
+            row[field] = num;
+          } else if (field === 'ir' && num <= 0) {
+            target.classList.add('invalid');
+            row[field] = num;
+          } else if (field === 'rippleVoltage' && num < 0) {
+            target.classList.add('invalid');
+            row[field] = num;
+          } else if (field === 'measuredCapacity' && num < 0) {
+            target.classList.add('invalid');
+            row[field] = num;
+          } else if (field === 'temperature') {
+            target.classList.remove('invalid');
+            row[field] = num;
+          } else {
+            target.classList.remove('invalid');
+            row[field] = num;
+          }
         }
       }
-    }
-    saveState();
-    updateRowInPlace(rowId);
-    renderSummary();
-  });
-
-  // Add row
-  document.getElementById('add-row-btn').addEventListener('click', () => {
-    const nextId = state.rows.length === 0
-      ? 1
-      : Math.max(...state.rows.map(r => r.id)) + 1;
-    state.rows.push({
-      id: nextId,
-      cellVoltage: null,
-      ir: null,
-      irUnit: 'mohm',
-      rippleVoltage: null,
-      measuredCapacity: null,
-      temperature: null,
+      saveState();
+      updateRowInPlace(rowId);
+      const district = state.districts.find(d => d.rowIds.includes(rowId));
+      if (district) updateDistrictSummaryInPlace(district.id);
     });
-    saveState();
-    render();
-  });
 
-  // Delete selected
-  document.getElementById('delete-selected-btn').addEventListener('click', () => {
-    const selected = Array.from(document.querySelectorAll('.row-select:checked'))
-      .map(cb => parseInt(cb.dataset.rowId, 10));
-    if (selected.length === 0) {
-      showBanner('No rows selected');
-      return;
-    }
-    if (!confirm(`Delete ${selected.length} row(s)?`)) return;
-    state.rows = state.rows.filter(r => !selected.includes(r.id));
-    state.rows.forEach((r, i) => { r.id = i + 1; });
-    saveState();
-    render();
-  });
+    // District actions (delegated click)
+    container.addEventListener('click', (e) => {
+      const target = e.target;
+      if (!(target instanceof Object) || !target.classList) return;
 
-  // Select all
-  document.getElementById('select-all').addEventListener('click', (e) => {
-    document.querySelectorAll('.row-select').forEach(cb => {
-      cb.checked = e.target.checked;
+      if (target.classList.contains('add-row-btn')) {
+        const districtId = parseInt(target.dataset.districtId, 10);
+        addRowToDistrict(districtId);
+      } else if (target.classList.contains('delete-selected-btn')) {
+        const districtId = parseInt(target.dataset.districtId, 10);
+        deleteSelectedInDistrict(districtId);
+      } else if (target.classList.contains('district-delete-btn')) {
+        const districtId = parseInt(target.dataset.districtId, 10);
+        deleteDistrict(districtId);
+      }
     });
-  });
+
+    // District name editing (delegated blur on contenteditable h3)
+    container.addEventListener('blur', (e) => {
+      const target = e.target;
+      if (!target.classList || !target.classList.contains('district-name')) return;
+      const districtId = parseInt(target.dataset.districtId, 10);
+      renameDistrict(districtId, target.textContent);
+    }, true);
+  }
+
+  // Add district (singleton)
+  const addDistrictBtn = document.getElementById('add-district-btn');
+  if (addDistrictBtn) {
+    addDistrictBtn.addEventListener('click', addDistrict);
+  }
 
   // Reset all
   document.getElementById('reset-btn').addEventListener('click', () => {
@@ -479,6 +676,7 @@ function wireEvents() {
     state = {
       config: { ...DEFAULT_CONFIG },
       rows: [{ ...SAMPLE_ROW }],
+      districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
       banner: null,
     };
     render();
@@ -493,7 +691,7 @@ function wireEvents() {
       updateThresholdDisplay();
       updateBaselineDisplay();
       state.rows.forEach(r => updateRowInPlace(r.id));
-      renderSummary();
+      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     };
     profileEl.addEventListener('change', onProfileChange);
     profileEl.addEventListener('input', onProfileChange);
@@ -513,7 +711,7 @@ function wireEvents() {
       state.config.healthyCapacity = val;
       saveState();
       state.rows.forEach(r => updateRowInPlace(r.id));
-      renderSummary();
+      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     });
   }
 
@@ -531,7 +729,7 @@ function wireEvents() {
       state.config.batasAtas = val;
       saveState();
       state.rows.forEach(r => updateRowInPlace(r.id));
-      renderSummary();
+      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     });
   }
 
@@ -549,7 +747,7 @@ function wireEvents() {
       state.config.batasBawah = val;
       saveState();
       state.rows.forEach(r => updateRowInPlace(r.id));
-      renderSummary();
+      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     });
   }
 }
@@ -575,5 +773,10 @@ if (typeof module !== 'undefined' && module.exports) {
     overCurrentDecision,
     batteryStatus,
     mean,
+    tempClass,
+    renderRowHTML,
+    DEFAULT_CONFIG,
+    SAMPLE_ROW,
+    DEFAULT_DISTRICT_NAME,
   };
 }

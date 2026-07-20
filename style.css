@@ -172,7 +172,8 @@ button:hover {
   border-radius: 6px;
 }
 
-#cell-table {
+#cell-table,
+.cell-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.85rem;
@@ -180,14 +181,17 @@ button:hover {
 }
 
 #cell-table th,
-#cell-table td {
+#cell-table td,
+.cell-table th,
+.cell-table td {
   border: 1px solid var(--border);
   padding: 0.4rem 0.5rem;
   text-align: center;
   white-space: nowrap;
 }
 
-#cell-table th {
+#cell-table th,
+.cell-table th {
   background: var(--surface-2);
   color: var(--text);
   font-weight: 600;
@@ -199,7 +203,9 @@ button:hover {
 }
 
 #cell-table input[type="number"],
-#cell-table input[type="text"] {
+#cell-table input[type="text"],
+.cell-table input[type="number"],
+.cell-table input[type="text"] {
   width: 80px;
   text-align: right;
   background: var(--bg);
@@ -208,19 +214,23 @@ button:hover {
 }
 
 #cell-table input[type="number"].invalid,
-#cell-table input[type="text"].invalid {
+#cell-table input[type="text"].invalid,
+.cell-table input[type="number"].invalid,
+.cell-table input[type="text"].invalid {
   border-color: var(--danger);
   background: var(--danger-bg);
 }
 
-#cell-table select {
+#cell-table select,
+.cell-table select {
   width: 70px;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
 }
 
-#cell-table td.derived {
+#cell-table td.derived,
+.cell-table td.derived {
   background: var(--surface-2);
   font-variant-numeric: tabular-nums;
   color: var(--text);
@@ -291,4 +301,80 @@ button:hover {
   max-width: 400px;
   z-index: 1000;
   color: var(--text);
+}
+
+/* ====================================================================
+   Districts (Feature 1)
+   ==================================================================== */
+
+.district {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.district-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  gap: 1rem;
+}
+
+.district-name {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text);
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  cursor: text;
+  flex: 1;
+}
+
+.district-name:hover { background: var(--surface-2); }
+.district-name:focus { outline: 2px solid var(--primary); background: var(--bg); }
+
+.district-delete-btn {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.district-delete-btn:hover { background: var(--danger-bg); }
+
+.district-summary {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-2);
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.district-summary strong { color: var(--accent); }
+
+/* ====================================================================
+   Temperature color coding (Feature 2)
+   ==================================================================== */
+
+#cell-table input.temp-warn,
+.cell-table input.temp-warn {
+  background: #ffb81c !important;
+  color: #1a1a1a !important;
+  font-weight: 600;
+}
+
+#cell-table input.temp-bad,
+.cell-table input.temp-bad {
+  background: #e84545 !important;
+  color: #fff !important;
+  font-weight: 700;
 }

@@ -11,6 +11,11 @@ Single-page HTML/JS/CSS tool for monitoring battery cell health.
   - **AND (cell voltage OR internal resistance)** — if either is in the OK range, that sub-check passes
 - **Per-profile IR baselines:** RSS = 0.75 mΩ, TSS/ER = 0.85 mΩ (120% / 150% thresholds)
 - **Configurable:** Capacity profile (RSS/TSS/ER), healthy capacity, voltage thresholds (batas atas/bawah)
+- **Districts:** Group rows by named location/date. Each district has its own table, summary, and add/delete-row buttons. Add new districts with `+ New district`. District name is editable (click the header to edit, blur to save).
+- **Temperature color coding:** Temperature input is highlighted based on value:
+  - `≤ 25 °C` or empty → default
+  - `25 < T < 30 °C` → yellow/orange (`temp-warn`)
+  - `≥ 30 °C` → red (`temp-bad`)
 - **Auto-save:** State persists to `localStorage` on every change
 - **Offline:** No network, no CDN, no build step
 
@@ -19,8 +24,9 @@ Single-page HTML/JS/CSS tool for monitoring battery cell health.
 1. Open `index.html` in any modern browser (Chrome, Firefox, Safari, Edge)
 2. Edit cells directly in the table
 3. Use `+ Add row` to add cells, checkboxes + `Delete selected` to remove
-4. Adjust thresholds in the Configuration panel
-5. Data auto-saves; refresh-safe
+4. Use `+ New district` to group cells by site/date; click district name to rename
+5. Adjust thresholds in the Configuration panel
+6. Data auto-saves; refresh-safe
 
 ## Configuration
 
@@ -56,7 +62,7 @@ elif (voltage_bad OR ir_bad):                     status = Tidak Layak
 else:                                              status = Cek   (SOH ≤ 80% defaults here)
 ```
 
-The summary footer shows counts of each status across all rows.
+Each district shows its own summary (Mean V, counts of Aman/Cek/Tidak Layak) above its table.
 
 ## Calculation Formulas
 
@@ -69,6 +75,25 @@ The summary footer shows counts of each status across all rows.
 
 Each row has a unit dropdown (`Ω` or `mΩ`). The dashboard defaults to **mΩ** because typical Li-ion cell internal resistance is in the 20–100 mΩ range.
 
+## Districts (data model)
+
+State shape:
+
+```js
+state = {
+  config: { ... },
+  rows: [ /* all rows, regardless of district */ ],
+  districts: [
+    { id: 1, name: "Site A - 2026-07-20", rowIds: [1, 2, 3] },
+    { id: 2, name: "Site B - 2026-07-21", rowIds: [4, 5] }
+  ]
+}
+```
+
+Row IDs are global (across all districts). Each row belongs to exactly one district.
+The first time the app is opened, one default district is created containing the sample row.
+Old saves without a `districts` field are migrated automatically (all rows go into a "Default" district).
+
 ## Tests
 
 ```bash
@@ -77,9 +102,9 @@ node tests/smoke.mjs
 node tests/integration.mjs
 ```
 
-- `test.mjs` — 23 unit tests for pure calc functions
+- `test.mjs` — 41 unit tests for pure calc functions + `tempClass` + `renderRowHTML`
 - `smoke.mjs` — runs all 19 sample rows
-- `integration.mjs` — simulates browser flow
+- `integration.mjs` — 22 tests simulating browser flow (districts, temp class, migration)
 
 No dependencies required.
 
@@ -88,7 +113,7 @@ No dependencies required.
 ```
 battery-dashboard/
 ├── index.html      # Page structure
-├── style.css       # Layout, status colors
+├── style.css       # Layout, status colors, district styles, temp colors
 ├── app.js          # Calc functions, state, render, event wiring
 ├── tests/
 │   ├── test.mjs
@@ -103,3 +128,4 @@ battery-dashboard/
 - No file import/export
 - No time-series / historical tracking
 - Desktop browser only
+

@@ -43,45 +43,16 @@
     </div>
   </section>
 
-  <section id="cell-table-section">
-    <h2>Cell Measurements</h2>
-    <div class="table-wrapper">
-      <table id="cell-table">
-        <thead>
-          <tr>
-            <th><input type="checkbox" id="select-all"></th>
-            <th>#</th>
-            <th>Cell V (V)</th>
-            <th>IR</th>
-            <th>Unit</th>
-            <th>V_ripple (V rms)</th>
-            <th>Measured Cap (Ah)</th>
-            <th>Temp (°C)</th>
-            <th>I_ripple (A rms)</th>
-            <th>P (W)</th>
-            <th>SOH (%)</th>
-            <th>Over Current</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="cell-tbody"></tbody>
-      </table>
-    </div>
+  <section id="districts-section">
+    <h2>Districts</h2>
+    <div id="districts-container"></div>
     <div class="actions">
-      <button type="button" id="add-row-btn">+ Add row</button>
-      <button type="button" id="delete-selected-btn">Delete selected</button>
+      <button type="button" id="add-district-btn">+ New district</button>
     </div>
   </section>
 
-  <footer id="summary">
-    <span>Mean V: <strong id="mean-v">—</strong></span>
-    <span>Aman: <strong id="count-aman">0</strong></span>
-    <span>Cek: <strong id="count-cek">0</strong></span>
-    <span>Tidak Layak: <strong id="count-tidak-layak">0</strong></span>
-  </footer>
-
   <div id="banner" hidden></div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>
