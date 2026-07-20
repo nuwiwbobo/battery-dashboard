@@ -1,6 +1,6 @@
 'use strict';
 
-// Build: 2026-07-20-r4 (battery status: SOH AND (V OR IR))
+// Build: 2026-07-20-r5 (worst-of-V/IR priority, then SOH gate)
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -70,45 +70,43 @@ function voltageStatus(absDeviation, amanMax, cekMax) {
   return 'Ganti';
 }
 
-// Combined battery status: SOH AND (cell voltage OR internal resistance)
+// Combined battery status: SOH AND worst-of-(V, IR)
 // 3 levels: Aman | Cek | Tidak Layak
-// Inputs:
-//   cellVoltage: V (number or null)
-//   ir:          ohms (number or null) — already normalized to Ω
-//   soh:         % (number or null, e.g. 85 means 85%)
-//   batasAtas, batasBawah: V thresholds
-//   irBaseline:  ohms (e.g. 0.00075 for RSS, 0.00085 for TSS/ER)
+// Priority: V and IR are each classified independently into ok/warning/bad.
+// The "worse" zone wins. Then SOH gate is applied:
+//   - SOH > 80% AND combined zone is ok  → Aman
+//   - combined zone is warning            → Cek
+//   - combined zone is bad                → Tidak Layak
+//   - SOH ≤ 80% (any zone)                → Cek
 function batteryStatus(cellVoltage, ir, soh, batasAtas, batasBawah, irBaseline) {
   if (cellVoltage == null || ir == null || soh == null) return null;
   if (isNaN(cellVoltage) || isNaN(ir) || isNaN(soh)) return null;
   if (batasAtas == null || batasBawah == null || irBaseline == null) return null;
-  if (batasAtas <= batasBawah) return null;  // invalid config
+  if (batasAtas <= batasBawah) return null;
   if (irBaseline <= 0) return null;
+
+  // Classify V zone: 0=ok, 1=warning, 2=bad
+  let vZone;
+  if (cellVoltage > batasAtas) vZone = 0;
+  else if (cellVoltage > batasBawah) vZone = 1;
+  else vZone = 2;
+
+  // Classify IR zone: 0=ok, 1=warning, 2=bad
+  let irZone;
+  if (ir < irBaseline * 1.2) irZone = 0;
+  else if (ir <= irBaseline * 1.5) irZone = 1;
+  else irZone = 2;
+
+  // Worst-of-both: take the larger zone number
+  const worstZone = Math.max(vZone, irZone);
 
   // SOH gate: must be > 80% to be Aman
   const sohOk = soh > 80;
 
-  // Voltage zones
-  const voltageOk = cellVoltage > batasAtas;
-  const voltageWarning = cellVoltage > batasBawah && cellVoltage <= batasAtas;
-  const voltageBad = cellVoltage <= batasBawah;
-
-  // IR zones (compared to baseline)
-  const irOk = ir < irBaseline * 1.2;
-  const irWarning = ir >= irBaseline * 1.2 && ir <= irBaseline * 1.5;
-  const irBad = ir > irBaseline * 1.5;
-
-  // Aman: SOH > 80% AND (V > batas_atas OR IR < 120% baseline)
-  if (sohOk && (voltageOk || irOk)) return 'Aman';
-
-  // Cek: V between batas OR IR 120-150% (must be Cek-eligible = not Aman)
-  if (voltageWarning || irWarning) return 'Cek';
-
-  // Tidak Layak: V < batas_bawah OR IR > 150%
-  if (voltageBad || irBad) return 'Tidak Layak';
-
-  // SOH <= 80% means it can't be Aman. With V/IR in OK range, default to Cek.
-  return 'Cek';
+  if (worstZone === 2) return 'Tidak Layak';
+  if (worstZone === 1) return 'Cek';
+  // worstZone === 0
+  return sohOk ? 'Aman' : 'Cek';
 }
 
 function mean(arr) {

@@ -92,9 +92,10 @@ test('batteryStatus: Aman — SOH>80% AND V>batas_atas', () => {
   assert.equal(batteryStatus(2.6, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
 });
 
-test('batteryStatus: Aman — SOH>80% AND IR<120% baseline (even with V in warning range)', () => {
-  // 2.3V (between 2.0 and 2.5), 85% SOH, IR 0.0007 (< 0.0009)
-  assert.equal(batteryStatus(2.3, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
+test('batteryStatus: V warning + IR ok + SOH>80% → Cek (worst-of: V warning wins)', () => {
+  // 2.3V (between 2.0 and 2.5 = warning), 85% SOH, IR 0.0007 (ok)
+  // With worst-of priority, V warning escalates to Cek even though IR is OK.
+  assert.equal(batteryStatus(2.3, 0.0007, 85, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
 test('batteryStatus: Tidak Layak — V < batas_bawah AND SOH<80%', () => {
@@ -141,5 +142,45 @@ test('batteryStatus: null inputs return null', () => {
 });
 
 test('batteryStatus: invalid config (atas <= bawah) returns null', () => {
-  assert.equal(batteryStatus(2.3, 0.0007, 85, 2.0, 2.5, cfg.irBaselineRss), null);
+  assert.equal(batteryStatus(2.0, 0.0007, 85, 2.0, 2.5, cfg.irBaselineRss), null);
+});
+
+// Priority tests: worst-of-V-and-IR wins
+test('batteryStatus priority: V ok + IR bad + SOH>80% → Tidak Layak (IR worse wins)', () => {
+  // V=2.6 (ok), IR=0.0012 (>150% baseline 0.001125), SOH=90%
+  assert.equal(batteryStatus(2.6, 0.0012, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+});
+
+test('batteryStatus priority: V ok + IR warning + SOH>80% → Cek (IR worse wins)', () => {
+  // V=2.6 (ok), IR=0.0010 (warning: 0.0009-0.001125), SOH=90%
+  assert.equal(batteryStatus(2.6, 0.0010, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus priority: V bad + IR ok + SOH>80% → Tidak Layak (V worse wins)', () => {
+  // V=1.9 (bad: ≤2.0), IR=0.0007 (ok), SOH=90%
+  assert.equal(batteryStatus(1.9, 0.0007, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+});
+
+test('batteryStatus priority: V warning + IR ok + SOH>80% → Cek (V worse wins)', () => {
+  // V=2.3 (warning: 2.0-2.5), IR=0.0007 (ok), SOH=90%
+  assert.equal(batteryStatus(2.3, 0.0007, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus priority: V bad + IR bad + SOH>80% → Tidak Layak', () => {
+  // V=1.9 (bad), IR=0.0015 (bad), SOH=90%
+  assert.equal(batteryStatus(1.9, 0.0015, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+});
+
+test('batteryStatus priority: V ok + IR ok + SOH=80% → Cek (gate fails)', () => {
+  // Everything OK but SOH exactly 80 → Cek
+  assert.equal(batteryStatus(2.6, 0.0007, 80, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus priority: V ok + IR ok + SOH=50% → Cek (SOH<80% defaults Cek even with good V/IR)', () => {
+  assert.equal(batteryStatus(2.6, 0.0007, 50, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+});
+
+test('batteryStatus priority: V ok + IR bad + SOH=50% → Tidak Layak (IR bad wins over SOH<80% Cek default)', () => {
+  // SOH<80% would default to Cek, but IR bad escalates to Tidak Layak
+  assert.equal(batteryStatus(2.6, 0.0012, 50, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
 });
