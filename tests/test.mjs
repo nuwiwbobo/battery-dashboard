@@ -3,10 +3,8 @@ import assert from 'node:assert/strict';
 import {
   rippleCurrent,
   dissipatedPower,
-  predictedTemp,
-  surfaceArea,
+  sohPercent,
   overCurrentDecision,
-  tempCheckDecision,
   voltageStatus,
   mean,
   normalizeIrOhms,
@@ -27,16 +25,6 @@ test('dissipatedPower matches spreadsheet row 2', () => {
   assert.ok(Math.abs(p - 0.01754) < 1e-4, `got ${p}`);
 });
 
-test('predictedTemp matches spreadsheet row 2', () => {
-  const t = predictedTemp(0.01754, 0.2814, 4.6);
-  assert.ok(Math.abs(t - 0.01355) < 1e-4, `got ${t}`);
-});
-
-test('surfaceArea from rectangular prism dimensions', () => {
-  const a = surfaceArea(0.17, 0.15, 0.36);
-  assert.ok(Math.abs(a - 0.2814) < 1e-9, `got ${a}`);
-});
-
 test('overCurrentDecision: 60.0001A at 300Ah exceeds C/5', () => {
   assert.equal(overCurrentDecision(60.0001, 300), true);
   assert.equal(overCurrentDecision(59.9, 300), false);
@@ -48,13 +36,6 @@ test('overCurrentDecision: sheet TRUE cases', () => {
 
 test('overCurrentDecision: sheet FALSE cases', () => {
   assert.equal(overCurrentDecision(8.88, 300), false);
-});
-
-test('tempCheckDecision boundaries', () => {
-  assert.equal(tempCheckDecision(2.9, 3, 8), 'Aman');
-  assert.equal(tempCheckDecision(3.0, 3, 8), 'Cek');
-  assert.equal(tempCheckDecision(8.0, 3, 8), 'Ganti');
-  assert.equal(tempCheckDecision(8.1, 3, 8), 'Ganti');
 });
 
 test('voltageStatus boundaries', () => {
@@ -81,7 +62,6 @@ test('mean ignores null/undefined values', () => {
 });
 
 test('comma decimal separator converts to period (Indonesian locale)', () => {
-  // Simulating the input handler: replace ',' with '.' before parseFloat
   const raw = '2,2338';
   const normalized = raw.replace(',', '.');
   const num = parseFloat(normalized);
@@ -89,12 +69,8 @@ test('comma decimal separator converts to period (Indonesian locale)', () => {
 });
 
 test('overCurrentDecision changes with capacity profile', () => {
-  // RSS: 300/5 = 60A threshold
-  // TSS/ER: 200/5 = 40A threshold
-  // At I=50A: TRUE for TSS/ER (50>40), FALSE for RSS (50<60)
   assert.equal(overCurrentDecision(50, 300), false, '50A should be FALSE at RSS 300Ah');
   assert.equal(overCurrentDecision(50, 200), true, '50A should be TRUE at TSS/ER 200Ah');
-  // Boundary
   assert.equal(overCurrentDecision(40, 200), false, '40A is exactly C/5, not exceeding');
   assert.equal(overCurrentDecision(40.0001, 200), true, '40.0001A exceeds C/5');
   assert.equal(overCurrentDecision(60, 300), false, '60A is exactly C/5 for RSS');
@@ -102,10 +78,25 @@ test('overCurrentDecision changes with capacity profile', () => {
 });
 
 test('voltageStatus uses absolute deviation from reference', () => {
-  // Verify the pure function works on |deviation| values directly
-  // (computeRowDerived subtracts the reference before calling this)
   assert.equal(voltageStatus(0.04, 0.05, 0.1), 'Aman');
   assert.equal(voltageStatus(0.05, 0.05, 0.1), 'Cek');
   assert.equal(voltageStatus(0.10, 0.05, 0.1), 'Ganti');
   assert.equal(voltageStatus(0.20, 0.05, 0.1), 'Ganti');
+});
+
+test('sohPercent: standard cases', () => {
+  // New cell: measured == healthy → 100%
+  assert.ok(Math.abs(sohPercent(300, 300) - 100) < 1e-9);
+  // 80% SOH (typical end-of-life threshold)
+  assert.ok(Math.abs(sohPercent(240, 300) - 80) < 1e-9);
+  // 50% SOH
+  assert.ok(Math.abs(sohPercent(150, 300) - 50) < 1e-9);
+});
+
+test('sohPercent: handles invalid inputs', () => {
+  assert.equal(sohPercent(null, 300), null);
+  assert.equal(sohPercent(300, null), null);
+  assert.equal(sohPercent(300, 0), null);
+  assert.equal(sohPercent(NaN, 300), null);
+  assert.equal(sohPercent(300, NaN), null);
 });

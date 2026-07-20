@@ -26,6 +26,10 @@
         Reference voltage (V)
         <input type="text" inputmode="decimal" id="config-reference">
       </label>
+      <label>
+        Healthy capacity (Ah)
+        <input type="text" inputmode="decimal" id="config-healthy">
+      </label>
       <div class="config-info">
         Over-current threshold: <strong id="oc-threshold">60 A</strong> (capacity / 5)
       </div>
@@ -44,11 +48,12 @@
             <th>IR</th>
             <th>Unit</th>
             <th>V_ripple (V rms)</th>
+            <th>Measured Cap (Ah)</th>
+            <th>Temp (°C)</th>
             <th>I_ripple (A rms)</th>
             <th>P (W)</th>
-            <th>ΔT (°C)</th>
+            <th>SOH (%)</th>
             <th>Over Current</th>
-            <th>Temp Check</th>
             <th>V_dev (V)</th>
             <th>V Status</th>
           </tr>
@@ -71,6 +76,6 @@
 
   <div id="banner" hidden></div>
 
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

@@ -64,10 +64,10 @@ const appCode = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
 // Use a Function constructor to run app.js with our globals
 const wrapped = `(function(document, window, localStorage, setTimeout) {
   ${appCode}
-  return { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig };
+  return { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig, sohPercent };
 })`;
 const fn = eval(wrapped);
-const { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig } = fn(document, window, localStorage, setTimeout);
+const { state, computeRowDerived, updateRowInPlace, wireEvents, renderConfig, sohPercent } = fn(document, window, localStorage, setTimeout);
 
 // Manually call wireEvents since we don't trigger DOMContentLoaded in the test
 wireEvents();
@@ -103,3 +103,33 @@ if (Math.abs(actual - expected) > 1e-9) {
 } else {
   console.log('PASS: vDev correctly reflects new reference voltage');
 }
+
+console.log('\n=== Test 3: SOH calculation ===');
+// Simulate setting measured capacity and temperature
+state.rows[0].measuredCapacity = 240;  // 80% of 300 healthy
+state.rows[0].temperature = 25.5;
+const d = computeRowDerived(state.rows[0], state.config);
+console.log('Row 1 SOH:', d.soh, '(expected 80)');
+console.log('Row 1 temperature:', d.temperature, '(expected 25.5)');
+if (Math.abs(d.soh - 80) > 1e-9) {
+  console.error('FAIL: SOH not computed correctly');
+  process.exit(1);
+}
+if (d.temperature !== 25.5) {
+  console.error('FAIL: temperature not passed through');
+  process.exit(1);
+}
+console.log('PASS: SOH and temperature work correctly');
+
+console.log('\n=== Test 4: healthyCapacity change updates SOH ===');
+const healthyEl = document.getElementById('config-healthy');
+healthyEl.value = '200';
+healthyEl.dispatchEvent({ type: 'input', target: healthyEl });
+const d2 = computeRowDerived(state.rows[0], state.config);
+console.log('State config healthyCapacity:', state.config.healthyCapacity);
+console.log('Row 1 SOH (240/200):', d2.soh, '(expected 120)');
+if (Math.abs(d2.soh - 120) > 1e-9) {
+  console.error('FAIL: SOH did not update on healthyCapacity change');
+  process.exit(1);
+}
+console.log('PASS: SOH updates when healthyCapacity changes');

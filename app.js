@@ -1,6 +1,6 @@
 'use strict';
 
-// Build: 2026-07-20-r2 (force-refresh deploy for cache invalidation)
+// Build: 2026-07-20-r3 (SOH + temperature input, drop temp calc)
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -19,6 +19,9 @@ function dissipatedPower(vRipple, irOhms) {
   return (vRipple * vRipple) / irOhms;
 }
 
+// COMMENTED OUT: temperature prediction is now user-entered, not calculated.
+// Kept here for reference; can be re-enabled if calc-based temp is needed again.
+/*
 function predictedTemp(power, area, h) {
   if (power == null || area == null || h == null) return null;
   if (area <= 0 || h <= 0) return null;
@@ -31,6 +34,14 @@ function surfaceArea(d1, d2, d3) {
   if ([d1, d2, d3].some(v => v < 0 || isNaN(v))) return null;
   return 2 * (d1 * d2 + d1 * d3 + d2 * d3);
 }
+*/
+
+function sohPercent(measuredCapacity, healthyCapacity) {
+  if (measuredCapacity == null || healthyCapacity == null) return null;
+  if (healthyCapacity <= 0) return null;
+  if (isNaN(measuredCapacity) || isNaN(healthyCapacity)) return null;
+  return (measuredCapacity / healthyCapacity) * 100;
+}
 
 function overCurrentDecision(rippleCurrent, capacity) {
   if (rippleCurrent == null || capacity == null) return null;
@@ -39,6 +50,9 @@ function overCurrentDecision(rippleCurrent, capacity) {
   return rippleCurrent > (capacity / 5);
 }
 
+// COMMENTED OUT: temperature check is no longer a decision column.
+// Temperature is now user-entered and displayed as a raw value, no thresholds applied.
+/*
 function tempCheckDecision(predictedTemp, amanMax, cekMax) {
   if (predictedTemp == null) return null;
   if (isNaN(predictedTemp)) return null;
@@ -46,6 +60,7 @@ function tempCheckDecision(predictedTemp, amanMax, cekMax) {
   if (predictedTemp < cekMax) return 'Cek';
   return 'Ganti';
 }
+*/
 
 function voltageStatus(absDeviation, amanMax, cekMax) {
   if (absDeviation == null) return null;
@@ -68,17 +83,13 @@ function mean(arr) {
 const STORAGE_KEY = 'battery-dashboard-state-v1';
 
 const DEFAULT_CONFIG = {
-  h: 4.6,
-  surfaceArea: 0.2814,
-  surfaceDims: { d1: 0.17, d2: 0.15, d3: 0.36 },
   rssCapacity: 300,
   tssErCapacity: 200,
   capacityProfile: 'RSS',
-  tempAmanMax: 3,
-  tempCekMax: 8,
   voltAmanMax: 0.05,
   voltCekMax: 0.1,
   referenceVoltage: 2.2,
+  healthyCapacity: 300,
 };
 
 const SAMPLE_ROW = {
@@ -87,6 +98,8 @@ const SAMPLE_ROW = {
   ir: 0.563,
   irUnit: 'mohm',
   rippleVoltage: 0.005,
+  measuredCapacity: null,
+  temperature: null,
 };
 
 let state = {
@@ -109,6 +122,9 @@ function loadState() {
         referenceVoltage: (typeof parsed.config.referenceVoltage === 'number' && !isNaN(parsed.config.referenceVoltage))
           ? parsed.config.referenceVoltage
           : DEFAULT_CONFIG.referenceVoltage,
+        healthyCapacity: (typeof parsed.config.healthyCapacity === 'number' && !isNaN(parsed.config.healthyCapacity) && parsed.config.healthyCapacity > 0)
+          ? parsed.config.healthyCapacity
+          : DEFAULT_CONFIG.healthyCapacity,
       },
       rows: parsed.rows.map((r, i) => ({
         id: i + 1,
@@ -116,6 +132,8 @@ function loadState() {
         ir: r.ir ?? null,
         irUnit: r.irUnit === 'mohm' ? 'mohm' : 'ohm',
         rippleVoltage: r.rippleVoltage ?? null,
+        measuredCapacity: (typeof r.measuredCapacity === 'number' && !isNaN(r.measuredCapacity)) ? r.measuredCapacity : null,
+        temperature: (typeof r.temperature === 'number' && !isNaN(r.temperature)) ? r.temperature : null,
       })),
       banner: null,
     };
@@ -167,13 +185,11 @@ function computeRowDerived(row, config) {
   const irOhms = normalizeIrOhms(row.ir, row.irUnit);
   const iRipple = rippleCurrent(row.rippleVoltage, irOhms);
   const power = dissipatedPower(row.rippleVoltage, irOhms);
-  const dT = predictedTemp(power, config.surfaceArea, config.h);
 
   const capacity = config.capacityProfile === 'RSS'
     ? config.rssCapacity
     : config.tssErCapacity;
   const overCurrent = overCurrentDecision(iRipple, capacity);
-  const tempCheck = tempCheckDecision(dT, config.tempAmanMax, config.tempCekMax);
 
   const vDev = (row.cellVoltage != null && typeof config.referenceVoltage === 'number')
     ? row.cellVoltage - config.referenceVoltage
@@ -182,15 +198,17 @@ function computeRowDerived(row, config) {
     ? voltageStatus(Math.abs(vDev), config.voltAmanMax, config.voltCekMax)
     : null;
 
+  const soh = sohPercent(row.measuredCapacity, config.healthyCapacity);
+
   return {
     irOhms,
     iRipple,
     power,
-    dT,
     overCurrent,
-    tempCheck,
     vDev,
     vStatus,
+    soh,
+    temperature: row.temperature,
   };
 }
 
@@ -215,6 +233,8 @@ function renderConfig() {
   if (el) el.value = state.config.capacityProfile;
   const refEl = document.getElementById('config-reference');
   if (refEl) refEl.value = state.config.referenceVoltage;
+  const healthyEl = document.getElementById('config-healthy');
+  if (healthyEl) healthyEl.value = state.config.healthyCapacity;
   updateThresholdDisplay();
 }
 
@@ -247,11 +267,12 @@ function renderTable() {
         </select>
       </td>
       <td><input type="text" inputmode="decimal" class="cell-input" data-field="rippleVoltage" data-row-id="${row.id}" value="${row.rippleVoltage ?? ''}"></td>
+      <td><input type="text" inputmode="decimal" class="cell-input" data-field="measuredCapacity" data-row-id="${row.id}" value="${row.measuredCapacity ?? ''}"></td>
+      <td><input type="text" inputmode="decimal" class="cell-input" data-field="temperature" data-row-id="${row.id}" value="${row.temperature ?? ''}"></td>
       <td class="derived">${formatNumber(d.iRipple, 4)}</td>
       <td class="derived">${formatNumber(d.power, 6)}</td>
-      <td class="derived">${formatNumber(d.dT, 4)}</td>
+      <td class="derived">${d.soh == null ? '—' : d.soh.toFixed(2) + '%'}</td>
       <td class="derived ${d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : ''}">${d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE'}</td>
-      <td class="derived ${statusClass(d.tempCheck)}">${d.tempCheck ?? '—'}</td>
       <td class="derived">${formatNumber(d.vDev, 4)}</td>
       <td class="derived ${statusClass(d.vStatus)}">${d.vStatus ?? '—'}</td>
     `;
@@ -273,17 +294,15 @@ function updateRowInPlace(rowId) {
   if (!tr) return;
   const d = computeRowDerived(row, state.config);
   const cells = tr.querySelectorAll('td');
-  if (cells.length < 13) return;
-  cells[6].textContent = formatNumber(d.iRipple, 4);
-  cells[7].textContent = formatNumber(d.power, 6);
-  cells[8].textContent = formatNumber(d.dT, 4);
-  cells[9].className = 'derived ' + (d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : '');
-  cells[9].textContent = d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE';
-  cells[10].className = 'derived ' + statusClass(d.tempCheck);
-  cells[10].textContent = d.tempCheck ?? '—';
-  cells[11].textContent = formatNumber(d.vDev, 4);
-  cells[12].className = 'derived ' + statusClass(d.vStatus);
-  cells[12].textContent = d.vStatus ?? '—';
+  if (cells.length < 14) return;
+  cells[8].textContent = formatNumber(d.iRipple, 4);
+  cells[9].textContent = formatNumber(d.power, 6);
+  cells[10].textContent = d.soh == null ? '—' : d.soh.toFixed(2) + '%';
+  cells[11].className = 'derived ' + (d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : '');
+  cells[11].textContent = d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE';
+  cells[12].textContent = formatNumber(d.vDev, 4);
+  cells[13].className = 'derived ' + statusClass(d.vStatus);
+  cells[13].textContent = d.vStatus ?? '—';
 }
 
 function renderSummary() {
@@ -294,11 +313,9 @@ function renderSummary() {
   let aman = 0, cek = 0, ganti = 0;
   state.rows.forEach(row => {
     const d = computeRowDerived(row, state.config);
-    [d.tempCheck, d.vStatus].forEach(s => {
-      if (s === 'Aman') aman++;
-      else if (s === 'Cek') cek++;
-      else if (s === 'Ganti') ganti++;
-    });
+    if (d.vStatus === 'Aman') aman++;
+    else if (d.vStatus === 'Cek') cek++;
+    else if (d.vStatus === 'Ganti') ganti++;
   });
   document.getElementById('count-aman').textContent = aman;
   document.getElementById('count-cek').textContent = cek;
@@ -342,6 +359,12 @@ function wireEvents() {
         } else if (field === 'rippleVoltage' && num < 0) {
           target.classList.add('invalid');
           row[field] = num;
+        } else if (field === 'measuredCapacity' && num < 0) {
+          target.classList.add('invalid');
+          row[field] = num;
+        } else if (field === 'temperature') {
+          target.classList.remove('invalid');
+          row[field] = num;
         } else {
           target.classList.remove('invalid');
           row[field] = num;
@@ -364,6 +387,8 @@ function wireEvents() {
       ir: null,
       irUnit: 'mohm',
       rippleVoltage: null,
+      measuredCapacity: null,
+      temperature: null,
     });
     saveState();
     render();
@@ -434,6 +459,24 @@ function wireEvents() {
       renderSummary();
     });
   }
+
+  // Config: healthy capacity input
+  const healthyEl = document.getElementById('config-healthy');
+  if (healthyEl) {
+    healthyEl.addEventListener('input', () => {
+      const raw = healthyEl.value.replace(',', '.');
+      const val = parseFloat(raw);
+      if (isNaN(val) || val <= 0) {
+        healthyEl.classList.add('invalid');
+        return;
+      }
+      healthyEl.classList.remove('invalid');
+      state.config.healthyCapacity = val;
+      saveState();
+      state.rows.forEach(r => updateRowInPlace(r.id));
+      renderSummary();
+    });
+  }
 }
 
 // ====================================================================
@@ -453,10 +496,8 @@ if (typeof module !== 'undefined' && module.exports) {
     normalizeIrOhms,
     rippleCurrent,
     dissipatedPower,
-    predictedTemp,
-    surfaceArea,
+    sohPercent,
     overCurrentDecision,
-    tempCheckDecision,
     voltageStatus,
     mean,
   };
