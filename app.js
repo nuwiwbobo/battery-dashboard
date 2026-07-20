@@ -1,5 +1,7 @@
 'use strict';
 
+// Build: 2026-07-20-r2 (force-refresh deploy for cache invalidation)
+
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
   return unit === 'mohm' ? ir / 1000 : ir;
