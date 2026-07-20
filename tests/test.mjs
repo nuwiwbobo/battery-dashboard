@@ -100,3 +100,12 @@ test('overCurrentDecision changes with capacity profile', () => {
   assert.equal(overCurrentDecision(60, 300), false, '60A is exactly C/5 for RSS');
   assert.equal(overCurrentDecision(60.0001, 300), true, '60.0001A exceeds C/5 for RSS');
 });
+
+test('voltageStatus uses absolute deviation from reference', () => {
+  // Verify the pure function works on |deviation| values directly
+  // (computeRowDerived subtracts the reference before calling this)
+  assert.equal(voltageStatus(0.04, 0.05, 0.1), 'Aman');
+  assert.equal(voltageStatus(0.05, 0.05, 0.1), 'Cek');
+  assert.equal(voltageStatus(0.10, 0.05, 0.1), 'Ganti');
+  assert.equal(voltageStatus(0.20, 0.05, 0.1), 'Ganti');
+});

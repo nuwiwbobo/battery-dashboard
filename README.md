@@ -24,11 +24,10 @@ Single-page HTML/JS/CSS tool for monitoring battery cell health. Mirrors the cal
 
 ## Configuration
 
-Only one configurable parameter in the UI — all others use hardcoded defaults.
-
 | Field | Default | Description |
 |---|---|---|
 | Capacity profile | RSS | Which capacity to use for over-current check (RSS=300Ah, TSS/ER=200Ah) |
+| Reference voltage | 2.2 V | Each cell's voltage is compared against this fixed value to compute V_dev and V_status |
 
 Hardcoded defaults (not editable in v1):
 - h = 4.6 W/m²·°C
@@ -47,7 +46,7 @@ Hardcoded defaults (not editable in v1):
 - **Predicted temp rise (°C):** `ΔT = P / (surface_area × h)`
 - **Over current:** `TRUE if I_ripple > capacity / 5`
 - **Temp check:** `Aman if ΔT < 3`, `Cek if 3 ≤ ΔT < 8`, `Ganti if ΔT ≥ 8`
-- **Voltage deviation:** `cell_voltage − mean(cell_voltage)`
+- **Voltage deviation:** `cell_voltage − reference_voltage` (user-configurable in UI)
 - **V status:** `Aman if |dev| < 0.05`, `Cek if 0.05 ≤ |dev| < 0.1`, `Ganti if |dev| ≥ 0.1`
 
 ## IR Unit Handling

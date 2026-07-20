@@ -76,6 +76,7 @@ const DEFAULT_CONFIG = {
   tempCekMax: 8,
   voltAmanMax: 0.05,
   voltCekMax: 0.1,
+  referenceVoltage: 2.2,
 };
 
 const SAMPLE_ROW = {
@@ -103,6 +104,9 @@ function loadState() {
       config: {
         ...DEFAULT_CONFIG,
         capacityProfile: (parsed.config.capacityProfile === 'TSS/ER') ? 'TSS/ER' : 'RSS',
+        referenceVoltage: (typeof parsed.config.referenceVoltage === 'number' && !isNaN(parsed.config.referenceVoltage))
+          ? parsed.config.referenceVoltage
+          : DEFAULT_CONFIG.referenceVoltage,
       },
       rows: parsed.rows.map((r, i) => ({
         id: i + 1,
@@ -157,7 +161,7 @@ function setState(newState) {
 // Derived calculations (per row)
 // ====================================================================
 
-function computeRowDerived(row, allRows, config) {
+function computeRowDerived(row, config) {
   const irOhms = normalizeIrOhms(row.ir, row.irUnit);
   const iRipple = rippleCurrent(row.rippleVoltage, irOhms);
   const power = dissipatedPower(row.rippleVoltage, irOhms);
@@ -169,12 +173,8 @@ function computeRowDerived(row, allRows, config) {
   const overCurrent = overCurrentDecision(iRipple, capacity);
   const tempCheck = tempCheckDecision(dT, config.tempAmanMax, config.tempCekMax);
 
-  const voltages = allRows
-    .map(r => r.cellVoltage)
-    .filter(v => v != null && !isNaN(v));
-  const meanV = mean(voltages);
-  const vDev = (row.cellVoltage != null && meanV != null)
-    ? row.cellVoltage - meanV
+  const vDev = (row.cellVoltage != null && typeof config.referenceVoltage === 'number')
+    ? row.cellVoltage - config.referenceVoltage
     : null;
   const vStatus = (vDev != null)
     ? voltageStatus(Math.abs(vDev), config.voltAmanMax, config.voltCekMax)
@@ -189,7 +189,6 @@ function computeRowDerived(row, allRows, config) {
     tempCheck,
     vDev,
     vStatus,
-    meanV,
   };
 }
 
@@ -212,6 +211,8 @@ function render() {
 function renderConfig() {
   const el = document.getElementById('config-profile');
   if (el) el.value = state.config.capacityProfile;
+  const refEl = document.getElementById('config-reference');
+  if (refEl) refEl.value = state.config.referenceVoltage;
   updateThresholdDisplay();
 }
 
@@ -229,7 +230,7 @@ function renderTable() {
   if (!tbody) return;
   tbody.innerHTML = '';
   state.rows.forEach(row => {
-    const d = computeRowDerived(row, state.rows, state.config);
+    const d = computeRowDerived(row, state.config);
     const tr = document.createElement('tr');
     tr.dataset.rowId = row.id;
     tr.innerHTML = `
@@ -268,7 +269,7 @@ function updateRowInPlace(rowId) {
   if (!row) return;
   const tr = document.querySelector(`#cell-tbody tr[data-row-id="${rowId}"]`);
   if (!tr) return;
-  const d = computeRowDerived(row, state.rows, state.config);
+  const d = computeRowDerived(row, state.config);
   const cells = tr.querySelectorAll('td');
   if (cells.length < 13) return;
   cells[6].textContent = formatNumber(d.iRipple, 4);
@@ -290,7 +291,7 @@ function renderSummary() {
 
   let aman = 0, cek = 0, ganti = 0;
   state.rows.forEach(row => {
-    const d = computeRowDerived(row, state.rows, state.config);
+    const d = computeRowDerived(row, state.config);
     [d.tempCheck, d.vStatus].forEach(s => {
       if (s === 'Aman') aman++;
       else if (s === 'Cek') cek++;
@@ -412,6 +413,24 @@ function wireEvents() {
     };
     profileEl.addEventListener('change', onProfileChange);
     profileEl.addEventListener('input', onProfileChange);
+  }
+
+  // Config: reference voltage input
+  const refEl = document.getElementById('config-reference');
+  if (refEl) {
+    refEl.addEventListener('input', () => {
+      const raw = refEl.value.replace(',', '.');
+      const val = parseFloat(raw);
+      if (isNaN(val) || val < 0) {
+        refEl.classList.add('invalid');
+        return;
+      }
+      refEl.classList.remove('invalid');
+      state.config.referenceVoltage = val;
+      saveState();
+      state.rows.forEach(r => updateRowInPlace(r.id));
+      renderSummary();
+    });
   }
 }
 
