@@ -89,3 +89,4 @@ battery-dashboard/
 ## Spreadsheet Discrepancies
 
 The reference spreadsheet has a few inconsistencies at threshold boundaries (e.g., row 2 shows dT=13.55°C but Temp=Cek, which contradicts the formula `ΔT ≥ 8 → Ganti`). The dashboard follows the spec formula strictly. If you need to reproduce the spreadsheet's exact (inconsistent) behavior, you would need to adjust the threshold logic in `app.js`.
+
