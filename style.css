@@ -40,6 +40,22 @@ header {
   border-bottom: 2px solid var(--primary);
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+#sync-status {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 0.25rem 0.5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
 h1 {
   margin: 0;
   font-size: 1.5rem;
@@ -110,6 +126,24 @@ h2 {
 .config-info strong {
   color: var(--accent);
   font-weight: 600;
+}
+
+.config-section-heading {
+  margin-top: 1.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.config-checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+  cursor: pointer;
+}
+
+.config-checkbox input[type="checkbox"] {
+  width: auto;
+  flex: none;
 }
 
 input[type="number"],

@@ -10,6 +10,13 @@ import {
   normalizeIrOhms,
   tempClass,
   renderRowHTML,
+  parseCSV,
+  rowsToCSV,
+  parseNumberOrNull,
+  pullFromGist,
+  pushToGist,
+  schedulePush,
+  setSyncStatus,
 } from '../app.js';
 
 test('rippleCurrent matches spreadsheet row 1', () => {
@@ -240,7 +247,7 @@ const ROW_HTML_CONFIG = {
 
 test('renderRowHTML: temp-warn class for temperature 27', () => {
   const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 27 };
-  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  const html = renderRowHTML(row, 1, ROW_HTML_CONFIG);
   assert.ok(html.includes('temp-warn'), `expected temp-warn in row HTML, got: ${html}`);
   assert.ok(!html.includes('temp-bad'), `expected no temp-bad, got: ${html}`);
   assert.ok(html.includes('value="27"'), `expected value="27", got: ${html}`);
@@ -248,14 +255,14 @@ test('renderRowHTML: temp-warn class for temperature 27', () => {
 
 test('renderRowHTML: temp-bad class for temperature 30', () => {
   const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 30 };
-  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  const html = renderRowHTML(row, 1, ROW_HTML_CONFIG);
   assert.ok(html.includes('temp-bad'), `expected temp-bad in row HTML, got: ${html}`);
   assert.ok(!html.includes('temp-warn'), `expected no temp-warn, got: ${html}`);
 });
 
 test('renderRowHTML: no temp class for temperature 25', () => {
   const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
-  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  const html = renderRowHTML(row, 1, ROW_HTML_CONFIG);
   assert.ok(!html.includes('temp-warn'), `expected no temp-warn for 25, got: ${html}`);
   assert.ok(!html.includes('temp-bad'), `expected no temp-bad for 25, got: ${html}`);
   // Locate the temp input element and check its class attribute
@@ -266,15 +273,225 @@ test('renderRowHTML: no temp class for temperature 25', () => {
 
 test('renderRowHTML: no temp class for null temperature', () => {
   const row = { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: null };
-  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  const html = renderRowHTML(row, 1, ROW_HTML_CONFIG);
   assert.ok(!html.includes('temp-warn'), `expected no temp-warn for null, got: ${html}`);
   assert.ok(!html.includes('temp-bad'), `expected no temp-bad for null, got: ${html}`);
 });
 
 test('renderRowHTML: includes data-row-id and data-field attributes', () => {
   const row = { id: 42, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
-  const html = renderRowHTML(row, ROW_HTML_CONFIG);
+  const html = renderRowHTML(row, 1, ROW_HTML_CONFIG);
   assert.ok(html.includes('data-row-id="42"'), `expected data-row-id="42" in HTML`);
   assert.ok(html.includes('data-field="cellVoltage"'));
   assert.ok(html.includes('data-field="temperature"'));
+});
+
+// ====================================================================
+// Per-district numbering (Feature: "#" column uses district-local index)
+// ====================================================================
+
+test('renderRowHTML: # column shows district-local index, not global row.id', () => {
+  // global id is 7 (would have been #7 in old code); district index is 3 (1-based)
+  const row = { id: 7, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
+  const html = renderRowHTML(row, 3, ROW_HTML_CONFIG);
+  // The "#" column is the second <td> in the row
+  const tr = html.match(/<tr[^>]*>([\s\S]*)<\/tr>/);
+  assert.ok(tr, 'found <tr>');
+  const tds = tr[1].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+  assert.ok(tds && tds.length >= 2, 'found tds');
+  assert.equal(tds[1].trim(), '<td>3</td>', '# column should be district-local index');
+  assert.ok(html.includes('data-row-id="7"'), 'data-row-id still uses global id');
+});
+
+test('renderRowHTML: # column with district index 1 shows "1"', () => {
+  const row = { id: 100, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
+  const html = renderRowHTML(row, 1, ROW_HTML_CONFIG);
+  const tr = html.match(/<tr[^>]*>([\s\S]*)<\/tr>/);
+  const tds = tr[1].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+  assert.equal(tds[1].trim(), '<td>1</td>', '# column = 1');
+});
+
+test('renderRowHTML: # column falls back to row.id when districtIndex invalid', () => {
+  const row = { id: 42, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
+  const html = renderRowHTML(row, 0, ROW_HTML_CONFIG);
+  const tr = html.match(/<tr[^>]*>([\s\S]*)<\/tr>/);
+  const tds = tr[1].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+  assert.equal(tds[1].trim(), '<td>42</td>', 'fallback to row.id when districtIndex=0');
+});
+
+// ====================================================================
+// CSV import/export
+// ====================================================================
+
+test('parseCSV: skips header, returns trimmed cells', () => {
+  const csv = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage\n1,2.5,25,0.000563,300,0.005\n2,2.6,26,0.0006,290,0.006';
+  const rows = parseCSV(csv);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], ['1', '2.5', '25', '0.000563', '300', '0.005']);
+  assert.deepEqual(rows[1], ['2', '2.6', '26', '0.0006', '290', '0.006']);
+});
+
+test('parseCSV: skips empty lines', () => {
+  const csv = 'header\n1,2,3,4,5,6\n\n7,8,9,10,11,12\n';
+  const rows = parseCSV(csv);
+  assert.equal(rows.length, 2);
+});
+
+test('parseCSV: returns empty array for empty input', () => {
+  assert.deepEqual(parseCSV(''), []);
+  assert.deepEqual(parseCSV('\n\n\n'), []);
+});
+
+test('parseCSV: only header returns empty array', () => {
+  const csv = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage';
+  assert.deepEqual(parseCSV(csv), []);
+});
+
+test('parseCSV: trims whitespace from each cell', () => {
+  const csv = 'header\n  1 , 2.5 , 25 , 0.000563 , 300 , 0.005 ';
+  const rows = parseCSV(csv);
+  assert.deepEqual(rows[0], ['1', '2.5', '25', '0.000563', '300', '0.005']);
+});
+
+test('parseNumberOrNull: parses numbers', () => {
+  assert.equal(parseNumberOrNull('2.5'), 2.5);
+  assert.equal(parseNumberOrNull('0.000563'), 0.000563);
+  assert.equal(parseNumberOrNull('-3.14'), -3.14);
+});
+
+test('parseNumberOrNull: handles comma decimal separator', () => {
+  assert.equal(parseNumberOrNull('2,5'), 2.5);
+  assert.equal(parseNumberOrNull('0,000563'), 0.000563);
+});
+
+test('parseNumberOrNull: returns null for empty/invalid', () => {
+  assert.equal(parseNumberOrNull(''), null);
+  assert.equal(parseNumberOrNull(null), null);
+  assert.equal(parseNumberOrNull(undefined), null);
+  assert.equal(parseNumberOrNull('abc'), null);
+  assert.equal(parseNumberOrNull('   '), null);
+});
+
+test('rowsToCSV: emits header and 1-based battery_no', () => {
+  const rows = [
+    { id: 7, cellVoltage: 2.5, ir: 0.000563, irUnit: 'ohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 },
+    { id: 8, cellVoltage: 2.6, ir: 0.0006, irUnit: 'ohm', rippleVoltage: 0.006, measuredCapacity: 290, temperature: 26 },
+  ];
+  const csv = rowsToCSV(rows);
+  const lines = csv.split('\n');
+  assert.equal(lines[0], 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage');
+  assert.equal(lines[1], '1,2.5,25,0.000563,300,0.005');
+  assert.equal(lines[2], '2,2.6,26,0.0006,290,0.006');
+});
+
+test('rowsToCSV: converts mohm to ohms in IR column', () => {
+  // 0.5 mΩ = 0.0005 Ω (clean float conversion, avoids 0.563/1000 = 0.0005629999... precision issues)
+  const rows = [
+    { id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 },
+  ];
+  const csv = rowsToCSV(rows);
+  const lines = csv.split('\n');
+  assert.equal(lines[1], '1,2.5,25,0.0005,300,0.005');
+});
+
+test('rowsToCSV: mohm → ohms is approximately correct for non-clean values', () => {
+  // Verify the conversion happens (within float precision tolerance)
+  const rows = [
+    { id: 1, cellVoltage: 2.5, ir: 0.563, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 },
+  ];
+  const csv = rowsToCSV(rows);
+  const lines = csv.split('\n');
+  const irField = parseFloat(lines[1].split(',')[3]);
+  assert.ok(Math.abs(irField - 0.000563) < 1e-12, `IR should be ~0.000563, got ${irField}`);
+});
+
+test('rowsToCSV: empty values become empty strings', () => {
+  const rows = [
+    { id: 1, cellVoltage: null, ir: null, irUnit: 'mohm', rippleVoltage: null, measuredCapacity: null, temperature: null },
+  ];
+  const csv = rowsToCSV(rows);
+  const lines = csv.split('\n');
+  assert.equal(lines[1], '1,,,,,');
+});
+
+test('CSV roundtrip: write rows → export → parse → equivalent', () => {
+  const original = [
+    { id: 1, cellVoltage: 2.2338, ir: 0.563, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 280, temperature: 25 },
+    { id: 2, cellVoltage: 2.1978, ir: 0.7812, irUnit: 'mohm', rippleVoltage: 0.1171, measuredCapacity: 270, temperature: 27 },
+    { id: 3, cellVoltage: 2.5, ir: null, irUnit: 'mohm', rippleVoltage: 0.01, measuredCapacity: 300, temperature: null },
+  ];
+  const csv = rowsToCSV(original);
+  const parsed = parseCSV(csv);
+  assert.equal(parsed.length, 3);
+
+  // Round-tripped first row
+  assert.equal(parseNumberOrNull(parsed[0][1]), original[0].cellVoltage);
+  assert.equal(parseNumberOrNull(parsed[0][2]), original[0].temperature);
+  // IR is stored in ohms, so mohm/1000 = ohm
+  assert.equal(parseNumberOrNull(parsed[0][3]), original[0].ir / 1000);
+  assert.equal(parseNumberOrNull(parsed[0][4]), original[0].measuredCapacity);
+  assert.equal(parseNumberOrNull(parsed[0][5]), original[0].rippleVoltage);
+
+  // Third row has null IR — should be empty string in CSV, null after parse
+  assert.equal(parsed[2][3], '');
+  assert.equal(parseNumberOrNull(parsed[2][3]), null);
+});
+
+// ====================================================================
+// Gist cloud sync (Feature 3) — function existence and graceful no-op
+// ====================================================================
+
+test('pullFromGist: defined and does not throw when fetch is undefined', async () => {
+  assert.equal(typeof pullFromGist, 'function');
+  // Without fetch, pullFromGist should be a no-op (return undefined, not throw)
+  await pullFromGist();
+});
+
+test('pushToGist: defined and does not throw when fetch is undefined', async () => {
+  assert.equal(typeof pushToGist, 'function');
+  await pushToGist();
+});
+
+test('schedulePush: defined and does not throw when setTimeout is undefined', () => {
+  assert.equal(typeof schedulePush, 'function');
+  schedulePush();
+});
+
+test('setSyncStatus: defined and is a no-op when document is undefined', () => {
+  assert.equal(typeof setSyncStatus, 'function');
+  setSyncStatus('test');
+});
+
+// ====================================================================
+// Cloud sync config gating — when disabled or credentials missing, the
+// sync functions must be a safe no-op (do not call fetch, do not throw).
+// ====================================================================
+
+test('pullFromGist: no-op when cloudSync is disabled (does not call fetch)', async () => {
+  // Install a fetch spy; the function should return before ever using it.
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true, json: () => ({}) }); };
+  try {
+    // The module's `state` is initialized with cloudSync.enabled = false,
+    // so the first guard fires and the function returns immediately.
+    const result = await pullFromGist();
+    assert.equal(result, undefined, 'returns undefined when disabled');
+    assert.equal(fetchCalls, 0, 'fetch was not called when cloudSync is disabled');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('pushToGist: no-op when cloudSync is disabled (does not call fetch)', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true }); };
+  try {
+    const result = await pushToGist();
+    assert.equal(result, undefined, 'returns undefined when disabled');
+    assert.equal(fetchCalls, 0, 'fetch was not called when cloudSync is disabled');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

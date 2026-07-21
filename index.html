@@ -9,7 +9,10 @@
 <body>
   <header>
     <h1>Battery Cell Monitoring Dashboard</h1>
-    <button id="reset-btn" type="button">Reset All</button>
+    <div class="header-right">
+      <span id="sync-status">⏳ Syncing...</span>
+      <button id="reset-btn" type="button">Reset All</button>
+    </div>
   </header>
 
   <section id="config-panel">
@@ -41,6 +44,25 @@
         IR baseline (active profile): <strong id="ir-baseline">0.75 mΩ</strong>
       </div>
     </div>
+
+    <h2 class="config-section-heading">Cloud Sync</h2>
+    <div class="config-grid">
+      <label class="config-checkbox">
+        <input type="checkbox" id="config-cloud-sync-enabled">
+        Enable cloud sync
+      </label>
+      <label>
+        Gist ID
+        <input type="text" id="config-gist-id" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        Gist token (GitHub PAT with <code>gist</code> scope)
+        <input type="password" id="config-gist-token" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="config-info">
+        One-time setup. Each device needs its own token (or share one).
+      </div>
+    </div>
   </section>
 
   <section id="districts-section">
@@ -53,6 +75,6 @@
 
   <div id="banner" hidden></div>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

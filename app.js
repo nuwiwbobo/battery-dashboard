@@ -1,6 +1,6 @@
 'use strict';
 
-// Build: 2026-07-20-r6 (districts + temp color coding)
+// Build: 2026-07-21-r8 (cloudSync config moved to user inputs)
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -116,10 +116,222 @@ function mean(arr) {
 }
 
 // ====================================================================
+// CSV import/export
+// ====================================================================
+
+function parseCSV(text) {
+  if (typeof text !== 'string') return [];
+  return text.split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .slice(1)
+    .map(line => line.split(',').map(c => c.trim()));
+}
+
+function parseNumberOrNull(s) {
+  if (s == null) return null;
+  const trimmed = String(s).trim();
+  if (trimmed === '') return null;
+  const normalized = trimmed.replace(',', '.');
+  const num = parseFloat(normalized);
+  return isNaN(num) ? null : num;
+}
+
+function rowsToCSV(rows) {
+  const header = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage';
+  const lines = rows.map((r, i) => {
+    const irOhms = r.ir != null ? (r.irUnit === 'mohm' ? r.ir / 1000 : r.ir) : '';
+    return [
+      i + 1,
+      r.cellVoltage ?? '',
+      r.temperature ?? '',
+      irOhms,
+      r.measuredCapacity ?? '',
+      r.rippleVoltage ?? '',
+    ].join(',');
+  });
+  return [header, ...lines].join('\n');
+}
+
+function downloadCSV(filename, content) {
+  if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof Blob === 'undefined') return;
+  const blob = new Blob([content], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function sanitizeFilename(name) {
+  return String(name).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+}
+
+function addCSVToDistrict(districtId, parsedRows) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return 0;
+  let added = 0;
+  parsedRows.forEach(rowData => {
+    if (!Array.isArray(rowData) || rowData.length < 6) return;
+    const newRow = {
+      id: nextRowId(),
+      cellVoltage: parseNumberOrNull(rowData[1]),
+      temperature: parseNumberOrNull(rowData[2]),
+      ir: parseNumberOrNull(rowData[3]),
+      irUnit: 'ohm',
+      measuredCapacity: parseNumberOrNull(rowData[4]),
+      rippleVoltage: parseNumberOrNull(rowData[5]),
+    };
+    state.rows.push(newRow);
+    district.rowIds.push(newRow.id);
+    added++;
+  });
+  if (added > 0) {
+    saveState();
+    renderDistricts();
+  }
+  return added;
+}
+
+function importCSV(districtId, file) {
+  if (typeof FileReader === 'undefined' || !file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const parsed = parseCSV(text);
+    addCSVToDistrict(districtId, parsed);
+  };
+  reader.readAsText(file);
+}
+
+function exportCSV(districtId) {
+  const district = state.districts.find(d => d.id === districtId);
+  if (!district) return;
+  const rows = getRowsForDistrict(district);
+  const csv = rowsToCSV(rows);
+  const date = new Date().toISOString().slice(0, 10);
+  const name = sanitizeFilename(district.name);
+  const filename = `district_${name}_${date}.csv`;
+  downloadCSV(filename, csv);
+}
+
+// ====================================================================
+// Gist cloud sync
+// ====================================================================
+
+let pushTimeout = null;
+let localPendingPush = false;
+
+async function pullFromGist() {
+  const cs = state.config.cloudSync;
+  if (!cs || !cs.enabled || !cs.gistId || !cs.gistToken) {
+    setSyncStatus('Sync disabled');
+    return;
+  }
+  if (typeof fetch === 'undefined') return;
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
+  if (localPendingPush) return;
+  const gistApi = `https://api.github.com/gists/${cs.gistId}`;
+  try {
+    setSyncStatus('Syncing...');
+    const res = await fetch(gistApi);
+    if (!res.ok) {
+      setSyncStatus('Sync error');
+      return;
+    }
+    const data = await res.json();
+    const content = data.files?.['state.json']?.content;
+    if (!content) return;
+    const remote = JSON.parse(content);
+    if (remote.version !== 1) return;
+    if (remote.updatedAt === state.lastSyncedAt) return;
+    state = {
+      config: { ...DEFAULT_CONFIG, ...(remote.config || {}), cloudSync: state.config.cloudSync },
+      rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
+      districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
+      lastSyncedAt: remote.updatedAt,
+      banner: null,
+    };
+    saveState();
+    render();
+    setSyncStatus('Synced');
+  } catch (e) {
+    console.error('Pull failed:', e);
+    setSyncStatus('Sync error');
+  }
+}
+
+async function pushToGist() {
+  const cs = state.config.cloudSync;
+  if (!cs || !cs.enabled || !cs.gistId || !cs.gistToken) {
+    setSyncStatus('Sync disabled');
+    return;
+  }
+  if (typeof fetch === 'undefined') return;
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
+  const updatedAt = new Date().toISOString();
+  const payload = {
+    version: 1,
+    updatedAt,
+    config: state.config,
+    districts: state.districts,
+    rows: state.rows,
+  };
+  const body = {
+    files: { 'state.json': { content: JSON.stringify(payload, null, 2) } },
+  };
+  const gistApi = `https://api.github.com/gists/${cs.gistId}`;
+  try {
+    localPendingPush = true;
+    setSyncStatus('Syncing...');
+    const res = await fetch(gistApi, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `token ${cs.gistToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.error('Push failed:', res.status, await res.text());
+      setSyncStatus('Sync error');
+      return;
+    }
+    state.lastSyncedAt = updatedAt;
+    saveState();
+    setSyncStatus('Synced');
+  } catch (e) {
+    console.error('Push failed:', e);
+    setSyncStatus('Sync error');
+  } finally {
+    localPendingPush = false;
+  }
+}
+
+function schedulePush() {
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
+  if (typeof setTimeout === 'undefined') return;
+  if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
+    clearTimeout(pushTimeout);
+  }
+  pushTimeout = setTimeout(pushToGist, SYNC_PUSH_DEBOUNCE_MS);
+}
+
+function setSyncStatus(text) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('sync-status');
+  if (el) el.textContent = text;
+}
+
+// ====================================================================
 // State management (browser-only)
 // ====================================================================
 
 const STORAGE_KEY = 'battery-dashboard-state-v1';
+
+const SYNC_POLL_INTERVAL_MS = 30000;
+const SYNC_PUSH_DEBOUNCE_MS = 5000;
 
 const DEFAULT_DISTRICT_NAME = 'Default';
 
@@ -132,6 +344,11 @@ const DEFAULT_CONFIG = {
   batasBawah: 2.0,
   irBaselineRss: 0.00075,      // 0.75 mΩ
   irBaselineTssEr: 0.00085,    // 0.85 mΩ
+  cloudSync: {
+    enabled: false,
+    gistId: '',
+    gistToken: '',
+  },
 };
 
 const SAMPLE_ROW = {
@@ -238,9 +455,15 @@ function loadState() {
         batasBawah: (typeof parsed.config.batasBawah === 'number' && !isNaN(parsed.config.batasBawah))
           ? parsed.config.batasBawah
           : DEFAULT_CONFIG.batasBawah,
+        cloudSync: {
+          enabled: parsed.config.cloudSync?.enabled === true,
+          gistId: typeof parsed.config.cloudSync?.gistId === 'string' ? parsed.config.cloudSync.gistId : '',
+          gistToken: typeof parsed.config.cloudSync?.gistToken === 'string' ? parsed.config.cloudSync.gistToken : '',
+        },
       },
       rows,
       districts,
+      lastSyncedAt: (typeof parsed.lastSyncedAt === 'string') ? parsed.lastSyncedAt : null,
       banner: null,
     };
   } catch (err) {
@@ -250,6 +473,7 @@ function loadState() {
       config: { ...DEFAULT_CONFIG },
       rows: [{ ...SAMPLE_ROW }],
       districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
+      lastSyncedAt: null,
       banner: null,
     };
   }
@@ -261,6 +485,7 @@ function saveState() {
       config: state.config,
       rows: state.rows,
       districts: state.districts,
+      lastSyncedAt: state.lastSyncedAt,
     }));
   } catch (err) {
     if (err.name === 'QuotaExceededError') {
@@ -269,6 +494,7 @@ function saveState() {
       console.error('Save failed:', err);
     }
   }
+  schedulePush();
 }
 
 function showBanner(message) {
@@ -347,6 +573,12 @@ function renderConfig() {
   if (atasEl) atasEl.value = state.config.batasAtas;
   const bawahEl = document.getElementById('config-batas-bawah');
   if (bawahEl) bawahEl.value = state.config.batasBawah;
+  const csEnabledEl = document.getElementById('config-cloud-sync-enabled');
+  if (csEnabledEl) csEnabledEl.checked = state.config.cloudSync.enabled;
+  const csIdEl = document.getElementById('config-gist-id');
+  if (csIdEl) csIdEl.value = state.config.cloudSync.gistId;
+  const csTokenEl = document.getElementById('config-gist-token');
+  if (csTokenEl) csTokenEl.value = state.config.cloudSync.gistToken;
   updateThresholdDisplay();
   updateBaselineDisplay();
 }
@@ -383,14 +615,15 @@ function tempClass(t) {
   return '';
 }
 
-function renderRowHTML(row, config) {
+function renderRowHTML(row, districtIndex, config) {
   const d = computeRowDerived(row, config);
   const tempCls = tempClass(row.temperature);
   const tempClassAttr = tempCls ? ' ' + tempCls : '';
+  const idx = (typeof districtIndex === 'number' && districtIndex > 0) ? districtIndex : row.id;
   return `
     <tr data-row-id="${row.id}">
       <td><input type="checkbox" class="row-select" data-row-id="${row.id}"></td>
-      <td>${row.id}</td>
+      <td>${idx}</td>
       <td><input type="text" inputmode="decimal" class="cell-input" data-field="cellVoltage" data-row-id="${row.id}" value="${row.cellVoltage ?? ''}"></td>
       <td><input type="text" inputmode="decimal" class="cell-input" data-field="ir" data-row-id="${row.id}" value="${row.ir ?? ''}"></td>
       <td>
@@ -434,7 +667,7 @@ function renderDistrictSummaryHTML(district) {
 
 function renderDistrictHTML(district) {
   const districtRows = getRowsForDistrict(district);
-  const tableRowsHTML = districtRows.map(row => renderRowHTML(row, state.config)).join('');
+  const tableRowsHTML = districtRows.map((row, idx) => renderRowHTML(row, idx + 1, state.config)).join('');
   return `
     <div class="district" data-district-id="${district.id}">
       <div class="district-header">
@@ -467,6 +700,9 @@ function renderDistrictHTML(district) {
       <div class="actions">
         <button type="button" class="add-row-btn" data-district-id="${district.id}">+ Add row</button>
         <button type="button" class="delete-selected-btn" data-district-id="${district.id}">Delete selected</button>
+        <button type="button" class="import-csv-btn" data-district-id="${district.id}">Import CSV</button>
+        <button type="button" class="export-csv-btn" data-district-id="${district.id}">Export CSV</button>
+        <input type="file" class="import-csv-input" data-district-id="${district.id}" accept=".csv" style="display:none">
       </div>
     </div>
   `;
@@ -651,6 +887,13 @@ function wireEvents() {
       } else if (target.classList.contains('district-delete-btn')) {
         const districtId = parseInt(target.dataset.districtId, 10);
         deleteDistrict(districtId);
+      } else if (target.classList.contains('import-csv-btn')) {
+        const districtId = parseInt(target.dataset.districtId, 10);
+        const input = container.querySelector(`.import-csv-input[data-district-id="${districtId}"]`);
+        if (input) input.click();
+      } else if (target.classList.contains('export-csv-btn')) {
+        const districtId = parseInt(target.dataset.districtId, 10);
+        exportCSV(districtId);
       }
     });
 
@@ -661,6 +904,16 @@ function wireEvents() {
       const districtId = parseInt(target.dataset.districtId, 10);
       renameDistrict(districtId, target.textContent);
     }, true);
+
+    // CSV import (delegated change on hidden file inputs)
+    container.addEventListener('change', (e) => {
+      const target = e.target;
+      if (!target.classList || !target.classList.contains('import-csv-input')) return;
+      const districtId = parseInt(target.dataset.districtId, 10);
+      const file = target.files && target.files[0];
+      if (file) importCSV(districtId, file);
+      target.value = '';
+    });
   }
 
   // Add district (singleton)
@@ -750,6 +1003,43 @@ function wireEvents() {
       state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     });
   }
+
+  // Config: cloud sync enabled
+  const csEnabledEl = document.getElementById('config-cloud-sync-enabled');
+  if (csEnabledEl) {
+    csEnabledEl.addEventListener('change', () => {
+      state.config.cloudSync.enabled = csEnabledEl.checked;
+      saveState();
+      if (state.config.cloudSync.enabled) {
+        pullFromGist();
+      } else {
+        setSyncStatus('Sync disabled');
+      }
+    });
+  }
+
+  // Config: Gist ID
+  const csIdEl = document.getElementById('config-gist-id');
+  if (csIdEl) {
+    csIdEl.addEventListener('input', () => {
+      state.config.cloudSync.gistId = csIdEl.value;
+      saveState();
+    });
+  }
+
+  // Config: Gist token
+  const csTokenEl = document.getElementById('config-gist-token');
+  if (csTokenEl) {
+    csTokenEl.addEventListener('input', () => {
+      state.config.cloudSync.gistToken = csTokenEl.value;
+      saveState();
+      if (state.config.cloudSync.enabled
+          && state.config.cloudSync.gistId
+          && state.config.cloudSync.gistToken) {
+        pullFromGist();
+      }
+    });
+  }
 }
 
 // ====================================================================
@@ -761,6 +1051,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     loadState();
     render();
     wireEvents();
+    if (state.config.cloudSync.enabled) {
+      pullFromGist();
+      if (typeof setInterval !== 'undefined') {
+        setInterval(pullFromGist, SYNC_POLL_INTERVAL_MS);
+      }
+    } else {
+      setSyncStatus('Sync disabled');
+    }
   });
 }
 
@@ -775,6 +1073,16 @@ if (typeof module !== 'undefined' && module.exports) {
     mean,
     tempClass,
     renderRowHTML,
+    parseCSV,
+    rowsToCSV,
+    parseNumberOrNull,
+    addCSVToDistrict,
+    importCSV,
+    exportCSV,
+    pullFromGist,
+    pushToGist,
+    schedulePush,
+    setSyncStatus,
     DEFAULT_CONFIG,
     SAMPLE_ROW,
     DEFAULT_DISTRICT_NAME,

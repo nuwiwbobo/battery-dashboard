@@ -98,10 +98,21 @@ const wrapped = `(function(document, window, localStorage, setTimeout, confirm) 
     deleteDistrict,
     renameDistrict,
     renderDistricts,
+    renderDistrictHTML,
+    renderRowHTML,
     loadState,
     saveState,
     getRowsForDistrict,
     escapeHTML,
+    parseCSV,
+    rowsToCSV,
+    addCSVToDistrict,
+    importCSV,
+    exportCSV,
+    pullFromGist,
+    pushToGist,
+    schedulePush,
+    setSyncStatus,
   };
 })`;
 const fn = eval(wrapped);
@@ -245,26 +256,26 @@ globalThis.confirm = realConfirm;
 console.log('\n=== Test 17: renderRowHTML applies temp-warn for temp 27 ===');
 const { renderRowHTML } = await import('../app.js');
 const row27 = { id: 99, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 27 };
-const html27 = renderRowHTML(row27, state.config);
+const html27 = renderRowHTML(row27, 1, state.config);
 assert(html27.includes('temp-warn'), 'temp-warn in HTML for 27');
 assert(!html27.includes('temp-bad'), 'no temp-bad for 27');
 
 console.log('\n=== Test 18: renderRowHTML applies temp-bad for temp 30 ===');
 const row30 = { id: 99, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 30 };
-const html30 = renderRowHTML(row30, state.config);
+const html30 = renderRowHTML(row30, 1, state.config);
 assert(html30.includes('temp-bad'), 'temp-bad in HTML for 30');
 assert(!html30.includes('temp-warn'), 'no temp-warn for 30');
 
 console.log('\n=== Test 19: renderRowHTML applies no temp class for temp 25 ===');
 const row25 = { id: 99, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 };
-const html25 = renderRowHTML(row25, state.config);
+const html25 = renderRowHTML(row25, 1, state.config);
 assert(!html25.includes('temp-warn'), 'no temp-warn for 25');
 assert(!html25.includes('temp-bad'), 'no temp-bad for 25');
 assert(html25.includes('data-field="temperature"'), 'temp input present');
 
 console.log('\n=== Test 20: renderRowHTML applies no temp class for null ===');
 const rowNull = { id: 99, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: null };
-const htmlNull = renderRowHTML(rowNull, state.config);
+const htmlNull = renderRowHTML(rowNull, 1, state.config);
 assert(!htmlNull.includes('temp-warn'), 'no temp-warn for null');
 assert(!htmlNull.includes('temp-bad'), 'no temp-bad for null');
 
@@ -304,5 +315,226 @@ refreshState();
 assert(state.districts.length === 1, 'one district');
 assert(state.districts[0].rowIds.length === 1, 'stale rowIds filtered');
 assert(state.districts[0].rowIds[0] === 1, 'only valid rowId remains');
+
+// ====================================================================
+// Feature: per-district numbering
+// ====================================================================
+
+console.log('\n=== Test 23: per-district numbering — row at index 3 shows "# 3" (not global id) ===');
+// Set up a 5-row district with non-sequential global ids to clearly distinguish
+// the district-local index from the global id
+api.loadState();  // reset to default
+refreshState();
+state.rows = [
+  { id: 10, cellVoltage: 2.5, ir: 0.0005, irUnit: 'ohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 },
+  { id: 20, cellVoltage: 2.6, ir: 0.0006, irUnit: 'ohm', rippleVoltage: 0.006, measuredCapacity: 300, temperature: 25 },
+  { id: 30, cellVoltage: 2.7, ir: 0.0007, irUnit: 'ohm', rippleVoltage: 0.007, measuredCapacity: 300, temperature: 25 },
+  { id: 40, cellVoltage: 2.8, ir: 0.0008, irUnit: 'ohm', rippleVoltage: 0.008, measuredCapacity: 300, temperature: 25 },
+  { id: 50, cellVoltage: 2.9, ir: 0.0009, irUnit: 'ohm', rippleVoltage: 0.009, measuredCapacity: 300, temperature: 25 },
+];
+state.districts = [{ id: 1, name: 'Site A', rowIds: [10, 20, 30, 40, 50] }];
+const distContainer = document.getElementById('districts-container');
+api.renderDistricts();
+const distHTML = distContainer.innerHTML;
+// The row with global id 30 is at district-local index 3 → should show "# 3"
+const tr30 = distHTML.match(/<tr data-row-id="30">[\s\S]*?<\/tr>/);
+assert(tr30, 'found row 30 tr');
+const tds30 = tr30[0].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+assert(tds30[1].trim() === '<td>3</td>', `row 30 should show "# 3" (district-local), got: ${tds30[1]}`);
+// First row (id 10) should show "# 1"
+const tr10 = distHTML.match(/<tr data-row-id="10">[\s\S]*?<\/tr>/);
+const tds10 = tr10[0].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+assert(tds10[1].trim() === '<td>1</td>', `row 10 should show "# 1", got: ${tds10[1]}`);
+// Last row (id 50) should show "# 5"
+const tr50 = distHTML.match(/<tr data-row-id="50">[\s\S]*?<\/tr>/);
+const tds50 = tr50[0].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+assert(tds50[1].trim() === '<td>5</td>', `row 50 should show "# 5", got: ${tds50[1]}`);
+
+console.log('\n=== Test 24: per-district numbering — second district starts at "# 1" ===');
+// Add a new district with rows that have higher global ids
+api.addDistrict();  // district 2
+api.addRowToDistrict(2);  // first new row in district 2
+api.addRowToDistrict(2);  // second new row in district 2
+refreshState();
+// First row in district 2 has whatever global id nextRowId() gave it
+const d2FirstId = state.districts[1].rowIds[0];
+api.renderDistricts();
+const dist2HTML = distContainer.innerHTML;
+const trFirst = dist2HTML.match(new RegExp(`<tr data-row-id="${d2FirstId}">[\\s\\S]*?<\\/tr>`));
+assert(trFirst, `row ${d2FirstId} (first in district 2) in HTML`);
+const tdsFirst = trFirst[0].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+assert(tdsFirst[1].trim() === '<td>1</td>', `first row in district 2 (id ${d2FirstId}) should show "# 1", got: ${tdsFirst[1]}`);
+// The "#" column in district 1's first row (id 10) should still be 1 (its own district-local index)
+const tr10Again = dist2HTML.match(/<tr data-row-id="10">[\s\S]*?<\/tr>/);
+assert(tr10Again, 'row 10 in district 1 still rendered');
+const tds10Again = tr10Again[0].match(/<td[^>]*>[\s\S]*?<\/td>/g);
+assert(tds10Again[1].trim() === '<td>1</td>', `district 1 row 10 should still show "# 1"`);
+
+// ====================================================================
+// Feature: CSV import
+// ====================================================================
+
+console.log('\n=== Test 25: renderDistricts HTML includes Import/Export CSV buttons ===');
+api.renderDistricts();
+const buttonsHTML = distContainer.innerHTML;
+assert(buttonsHTML.includes('import-csv-btn'), 'Import CSV button present');
+assert(buttonsHTML.includes('export-csv-btn'), 'Export CSV button present');
+assert(buttonsHTML.includes('import-csv-input'), 'hidden file input present');
+
+console.log('\n=== Test 26: addCSVToDistrict — add rows from parsed CSV ===');
+const initialRows = state.rows.length;
+const initialRowIds = [...state.districts[0].rowIds];
+const parsedCSV = [
+  ['1', '2.5', '25', '0.0005', '300', '0.005'],
+  ['2', '2.6', '26', '0.0006', '290', '0.006'],
+  ['3', '2.7', '27', '0.0007', '280', '0.007'],
+];
+const added = api.addCSVToDistrict(1, parsedCSV);
+refreshState();
+assert(added === 3, '3 rows added');
+assert(state.rows.length === initialRows + 3, 'state.rows has 3 more entries');
+assert(state.districts[0].rowIds.length === initialRowIds.length + 3, 'district 1 has 3 more rowIds');
+// Verify one of the new rows
+const newRow = state.rows[state.rows.length - 1];
+assert(newRow.cellVoltage === 2.7, 'last new row has cellVoltage 2.7');
+assert(newRow.temperature === 27, 'last new row has temperature 27');
+assert(newRow.ir === 0.0007, 'last new row has ir 0.0007');
+assert(newRow.irUnit === 'ohm', 'irUnit defaults to ohm for CSV imports');
+assert(newRow.measuredCapacity === 280, 'last new row has measuredCapacity 280');
+assert(newRow.rippleVoltage === 0.007, 'last new row has rippleVoltage 0.007');
+
+console.log('\n=== Test 27: addCSVToDistrict — invalid rows are skipped ===');
+const stateRowsBeforeMixed = state.rows.length;
+const mixedCSV = [
+  ['1', '2.5', '25', '0.0005', '300', '0.005'],
+  ['bad-row-only-5-cols'],     // not 6 columns, should be skipped
+  null,                         // null, should be skipped
+  ['2', 'abc', '26', '0.0006', '290', '0.006'],  // cellVoltage is 'abc', should still add (null)
+];
+const addedMixed = api.addCSVToDistrict(1, mixedCSV);
+refreshState();
+assert(addedMixed === 2, '2 valid rows added (bad-row and null skipped)');
+// Verify the 'abc' row was added with null cellVoltage
+const lastRow = state.rows[state.rows.length - 1];
+assert(lastRow.cellVoltage === null, 'abc → null cellVoltage');
+
+console.log('\n=== Test 28: rowsToCSV — exports district rows in CSV format ===');
+const district1Rows = api.getRowsForDistrict(state.districts[0]);
+const csv = api.rowsToCSV(district1Rows);
+const lines = csv.split('\n');
+assert(lines[0] === 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage', 'header correct');
+// First data line should be "1,..." (district-local 1-based)
+assert(lines[1].startsWith('1,'), `first data line starts with "1,", got: ${lines[1]}`);
+// All data lines start with 1, 2, 3, ... (district-local, 1-based)
+lines.slice(1).forEach((line, i) => {
+  assert(line.startsWith(`${i + 1},`), `line ${i+2} should start with "${i+1},", got: ${line}`);
+});
+
+console.log('\n=== Test 29: CSV roundtrip — write → export → parse → equal ===');
+const originalRows = [
+  { id: 1, cellVoltage: 2.5, ir: 0.0005, irUnit: 'ohm', rippleVoltage: 0.005, measuredCapacity: 300, temperature: 25 },
+  { id: 2, cellVoltage: 2.6, ir: 0.0006, irUnit: 'ohm', rippleVoltage: 0.006, measuredCapacity: 290, temperature: 26 },
+];
+const exported = api.rowsToCSV(originalRows);
+const reparsed = api.parseCSV(exported);
+assert(reparsed.length === 2, 'reparsed has 2 rows');
+assert(reparsed[0][0] === '1', 'reparsed[0][0] = "1" (district-local)');
+assert(reparsed[0][1] === '2.5', 'reparsed[0][1] = "2.5"');
+assert(reparsed[0][3] === '0.0005', 'reparsed[0][3] = "0.0005" (ohms)');
+assert(reparsed[1][0] === '2', 'reparsed[1][0] = "2" (district-local)');
+assert(reparsed[1][1] === '2.6', 'reparsed[1][1] = "2.6"');
+
+// ====================================================================
+// Feature: Gist cloud sync (function existence only — fetch not stubbed in Node)
+// ====================================================================
+
+console.log('\n=== Test 30: Gist sync functions are defined ===');
+assert(typeof api.pullFromGist === 'function', 'pullFromGist is a function');
+assert(typeof api.pushToGist === 'function', 'pushToGist is a function');
+assert(typeof api.schedulePush === 'function', 'schedulePush is a function');
+assert(typeof api.setSyncStatus === 'function', 'setSyncStatus is a function');
+assert(typeof api.importCSV === 'function', 'importCSV is a function');
+assert(typeof api.exportCSV === 'function', 'exportCSV is a function');
+
+// ====================================================================
+// Feature: Cloud sync config (per-user inputs instead of hardcoded token)
+// ====================================================================
+
+console.log('\n=== Test 31: DEFAULT_CONFIG has cloudSync object with safe defaults ===');
+// Re-read state (was reset by test 23's loadState call)
+refreshState();
+assert(state.config.cloudSync !== undefined, 'cloudSync object present');
+assert(state.config.cloudSync.enabled === false, 'cloudSync.enabled defaults to false');
+assert(state.config.cloudSync.gistId === '', 'cloudSync.gistId defaults to empty string');
+assert(state.config.cloudSync.gistToken === '', 'cloudSync.gistToken defaults to empty string');
+
+console.log('\n=== Test 32: loadState preserves cloudSync from localStorage ===');
+localStorage._data['battery-dashboard-state-v1'] = JSON.stringify({
+  config: {
+    capacityProfile: 'RSS',
+    healthyCapacity: 300,
+    batasAtas: 2.5,
+    batasBawah: 2.0,
+    cloudSync: {
+      enabled: true,
+      gistId: 'fake-gist-id-for-test',
+      gistToken: 'fake-test-token',
+    },
+  },
+  rows: [{ id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 280, temperature: 25 }],
+  districts: [{ id: 1, name: 'Test', rowIds: [1] }],
+});
+api.loadState();
+refreshState();
+assert(state.config.cloudSync.enabled === true, 'cloudSync.enabled loaded from storage');
+assert(state.config.cloudSync.gistId === 'fake-gist-id-for-test', 'cloudSync.gistId loaded from storage');
+assert(state.config.cloudSync.gistToken === 'fake-test-token', 'cloudSync.gistToken loaded from storage');
+
+console.log('\n=== Test 33: saveState persists cloudSync to localStorage ===');
+api.loadState();  // reset to defaults
+refreshState();
+state.config.cloudSync.enabled = true;
+state.config.cloudSync.gistId = 'persist-test-id';
+state.config.cloudSync.gistToken = 'persist-test-token';
+api.saveState();
+const persisted = JSON.parse(localStorage._data['battery-dashboard-state-v1']);
+assert(persisted.config.cloudSync.enabled === true, 'cloudSync.enabled persisted');
+assert(persisted.config.cloudSync.gistId === 'persist-test-id', 'cloudSync.gistId persisted');
+assert(persisted.config.cloudSync.gistToken === 'persist-test-token', 'cloudSync.gistToken persisted');
+
+console.log('\n=== Test 34: Toggling cloud-sync checkbox updates state ===');
+api.loadState();  // reset to defaults (cloudSync.enabled = false)
+refreshState();
+const csEnabledEl = document.getElementById('config-cloud-sync-enabled');
+csEnabledEl.checked = true;
+csEnabledEl.dispatchEvent({ type: 'change', target: csEnabledEl });
+assert(state.config.cloudSync.enabled === true, 'toggling checkbox ON updates state');
+csEnabledEl.checked = false;
+csEnabledEl.dispatchEvent({ type: 'change', target: csEnabledEl });
+assert(state.config.cloudSync.enabled === false, 'toggling checkbox OFF updates state');
+
+console.log('\n=== Test 35: Disabling cloud sync sets status to "Sync disabled" ===');
+api.loadState();
+refreshState();
+const syncStatusEl = document.getElementById('sync-status');
+// After load, the bootstrap only sets status when document is defined and DOMContentLoaded
+// fires. In our mock, DOMContentLoaded never fires, so the status is whatever the
+// fake element started with (empty). Manually call setSyncStatus via the API and
+// verify it lands on the DOM element.
+api.setSyncStatus('Sync disabled');
+assert(syncStatusEl.textContent === 'Sync disabled', 'setSyncStatus("Sync disabled") reaches DOM');
+
+console.log('\n=== Test 36: Gist ID and token inputs update state on input ===');
+api.loadState();
+refreshState();
+const csIdEl = document.getElementById('config-gist-id');
+csIdEl.value = 'new-gist-id';
+csIdEl.dispatchEvent({ type: 'input', target: csIdEl });
+assert(state.config.cloudSync.gistId === 'new-gist-id', 'gistId input updates state');
+
+const csTokenEl = document.getElementById('config-gist-token');
+csTokenEl.value = 'new-token-value';
+csTokenEl.dispatchEvent({ type: 'input', target: csTokenEl });
+assert(state.config.cloudSync.gistToken === 'new-token-value', 'gistToken input updates state');
 
 console.log('\nAll integration tests PASSED');
