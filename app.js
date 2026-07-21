@@ -1,6 +1,14 @@
 'use strict';
 
-// Build: 2026-07-21-r8 (cloudSync config moved to user inputs)
+// Build: 2026-07-21-r9 (Firebase sync + login screen)
+//
+// SECURITY NOTE: This dashboard uses client-side authentication (hardcoded
+// username/password in this source file) and a Firebase Realtime Database
+// URL stored in localStorage. Anyone with the source code can extract the
+// credentials and the URL. This is the same trust model as the previous
+// Gist-based sync (which used a hardcoded token in the source). Suitable
+// for personal/single-tenant use only. Do not deploy to a public host
+// without adding proper server-side auth.
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -217,39 +225,41 @@ function exportCSV(districtId) {
 }
 
 // ====================================================================
-// Gist cloud sync
+// Firebase Realtime Database cloud sync
 // ====================================================================
+//
+// State is stored at `<firebaseDbUrl>/state.json`. The REST API is used
+// directly (no Firebase SDK) — PUT to write, GET to read. No auth token
+// is required because access is gated by the URL itself. See index.html
+// for security notes and the rules the user should apply.
 
 let pushTimeout = null;
-let localPendingPush = false;
 
-async function pullFromGist() {
+async function pullFromFirebase() {
   const cs = state.config.cloudSync;
-  if (!cs || !cs.enabled || !cs.gistId || !cs.gistToken) {
-    setSyncStatus('Sync disabled');
-    return;
-  }
+  if (!cs || !cs.enabled || !cs.firebaseDbUrl) return;
+  const url = cs.firebaseDbUrl;
   if (typeof fetch === 'undefined') return;
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
-  if (localPendingPush) return;
-  const gistApi = `https://api.github.com/gists/${cs.gistId}`;
   try {
     setSyncStatus('Syncing...');
-    const res = await fetch(gistApi);
+    const res = await fetch(`${url.replace(/\/$/, '')}/state.json`);
     if (!res.ok) {
       setSyncStatus('Sync error');
       return;
     }
-    const data = await res.json();
-    const content = data.files?.['state.json']?.content;
-    if (!content) return;
-    const remote = JSON.parse(content);
-    if (remote.version !== 1) return;
-    if (remote.updatedAt === state.lastSyncedAt) return;
+    const remote = await res.json();
+    if (!remote || !remote.updatedAt) {
+      setSyncStatus('No remote state');
+      return;
+    }
+    if (remote.updatedAt === state.lastSyncedAt) {
+      setSyncStatus('Synced');
+      return;
+    }
     state = {
       config: { ...DEFAULT_CONFIG, ...(remote.config || {}), cloudSync: state.config.cloudSync },
-      rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
       districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
+      rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
       lastSyncedAt: remote.updatedAt,
       banner: null,
     };
@@ -262,39 +272,27 @@ async function pullFromGist() {
   }
 }
 
-async function pushToGist() {
+async function pushToFirebase() {
   const cs = state.config.cloudSync;
-  if (!cs || !cs.enabled || !cs.gistId || !cs.gistToken) {
-    setSyncStatus('Sync disabled');
-    return;
-  }
+  if (!cs || !cs.enabled || !cs.firebaseDbUrl) return;
+  const url = cs.firebaseDbUrl;
   if (typeof fetch === 'undefined') return;
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
   const updatedAt = new Date().toISOString();
   const payload = {
     version: 1,
     updatedAt,
-    config: state.config,
+    config: { ...state.config, cloudSync: undefined },
     districts: state.districts,
     rows: state.rows,
   };
-  const body = {
-    files: { 'state.json': { content: JSON.stringify(payload, null, 2) } },
-  };
-  const gistApi = `https://api.github.com/gists/${cs.gistId}`;
   try {
-    localPendingPush = true;
     setSyncStatus('Syncing...');
-    const res = await fetch(gistApi, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `token ${cs.gistToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
+    const res = await fetch(`${url.replace(/\/$/, '')}/state.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
-      console.error('Push failed:', res.status, await res.text());
       setSyncStatus('Sync error');
       return;
     }
@@ -304,8 +302,6 @@ async function pushToGist() {
   } catch (e) {
     console.error('Push failed:', e);
     setSyncStatus('Sync error');
-  } finally {
-    localPendingPush = false;
   }
 }
 
@@ -315,13 +311,67 @@ function schedulePush() {
   if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
     clearTimeout(pushTimeout);
   }
-  pushTimeout = setTimeout(pushToGist, SYNC_PUSH_DEBOUNCE_MS);
+  pushTimeout = setTimeout(pushToFirebase, SYNC_PUSH_DEBOUNCE_MS);
 }
 
 function setSyncStatus(text) {
   if (typeof document === 'undefined') return;
   const el = document.getElementById('sync-status');
   if (el) el.textContent = text;
+}
+
+// ====================================================================
+// Client-side login (security model: see SECURITY NOTE at top of file)
+// ====================================================================
+
+const AUTH_USERNAME = 'admin';
+const AUTH_PASSWORD = 'battery2026';
+const AUTH_STORAGE_KEY = 'battery-dashboard-auth';
+
+function isLoggedIn() {
+  if (typeof localStorage === 'undefined') return false;
+  return localStorage.getItem(AUTH_STORAGE_KEY) === 'ok';
+}
+
+function showLogin() {
+  if (typeof document === 'undefined') return;
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.hidden = false;
+  const app = document.getElementById('app-content');
+  if (app) app.hidden = true;
+  const err = document.getElementById('login-error');
+  if (err) err.hidden = true;
+  const userEl = document.getElementById('login-username');
+  if (userEl) userEl.focus();
+}
+
+function showApp() {
+  if (typeof document === 'undefined') return;
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) overlay.hidden = true;
+  const app = document.getElementById('app-content');
+  if (app) app.hidden = false;
+}
+
+function handleLogin(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const userEl = document.getElementById('login-username');
+  const passEl = document.getElementById('login-password');
+  const errEl = document.getElementById('login-error');
+  const u = userEl ? userEl.value : '';
+  const p = passEl ? passEl.value : '';
+  if (u === AUTH_USERNAME && p === AUTH_PASSWORD) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(AUTH_STORAGE_KEY, 'ok');
+    }
+    showApp();
+    bootstrap();
+  } else {
+    if (errEl) {
+      errEl.textContent = 'Invalid username or password';
+      errEl.hidden = false;
+    }
+  }
 }
 
 // ====================================================================
@@ -346,8 +396,7 @@ const DEFAULT_CONFIG = {
   irBaselineTssEr: 0.00085,    // 0.85 mΩ
   cloudSync: {
     enabled: false,
-    gistId: '',
-    gistToken: '',
+    firebaseDbUrl: '',
   },
 };
 
@@ -457,8 +506,9 @@ function loadState() {
           : DEFAULT_CONFIG.batasBawah,
         cloudSync: {
           enabled: parsed.config.cloudSync?.enabled === true,
-          gistId: typeof parsed.config.cloudSync?.gistId === 'string' ? parsed.config.cloudSync.gistId : '',
-          gistToken: typeof parsed.config.cloudSync?.gistToken === 'string' ? parsed.config.cloudSync.gistToken : '',
+          firebaseDbUrl: typeof parsed.config.cloudSync?.firebaseDbUrl === 'string'
+            ? parsed.config.cloudSync.firebaseDbUrl
+            : '',
         },
       },
       rows,
@@ -575,10 +625,8 @@ function renderConfig() {
   if (bawahEl) bawahEl.value = state.config.batasBawah;
   const csEnabledEl = document.getElementById('config-cloud-sync-enabled');
   if (csEnabledEl) csEnabledEl.checked = state.config.cloudSync.enabled;
-  const csIdEl = document.getElementById('config-gist-id');
-  if (csIdEl) csIdEl.value = state.config.cloudSync.gistId;
-  const csTokenEl = document.getElementById('config-gist-token');
-  if (csTokenEl) csTokenEl.value = state.config.cloudSync.gistToken;
+  const csUrlEl = document.getElementById('cloud-sync-url');
+  if (csUrlEl) csUrlEl.value = state.config.cloudSync.firebaseDbUrl;
   updateThresholdDisplay();
   updateBaselineDisplay();
 }
@@ -1010,35 +1058,30 @@ function wireEvents() {
     csEnabledEl.addEventListener('change', () => {
       state.config.cloudSync.enabled = csEnabledEl.checked;
       saveState();
-      if (state.config.cloudSync.enabled) {
-        pullFromGist();
+      if (state.config.cloudSync.enabled && state.config.cloudSync.firebaseDbUrl) {
+        pullFromFirebase();
       } else {
-        setSyncStatus('Sync disabled');
+        setSyncStatus('Cloud sync disabled');
       }
     });
   }
 
-  // Config: Gist ID
-  const csIdEl = document.getElementById('config-gist-id');
-  if (csIdEl) {
-    csIdEl.addEventListener('input', () => {
-      state.config.cloudSync.gistId = csIdEl.value;
+  // Config: Firebase database URL
+  const csUrlEl = document.getElementById('cloud-sync-url');
+  if (csUrlEl) {
+    csUrlEl.addEventListener('input', () => {
+      state.config.cloudSync.firebaseDbUrl = csUrlEl.value;
       saveState();
+      if (state.config.cloudSync.enabled && state.config.cloudSync.firebaseDbUrl) {
+        pullFromFirebase();
+      }
     });
   }
 
-  // Config: Gist token
-  const csTokenEl = document.getElementById('config-gist-token');
-  if (csTokenEl) {
-    csTokenEl.addEventListener('input', () => {
-      state.config.cloudSync.gistToken = csTokenEl.value;
-      saveState();
-      if (state.config.cloudSync.enabled
-          && state.config.cloudSync.gistId
-          && state.config.cloudSync.gistToken) {
-        pullFromGist();
-      }
-    });
+  // Login form
+  const loginForm = document.getElementById('login-form');
+  if (loginForm) {
+    loginForm.addEventListener('submit', handleLogin);
   }
 }
 
@@ -1046,18 +1089,32 @@ function wireEvents() {
 // Bootstrap (browser-only)
 // ====================================================================
 
+function bootstrap() {
+  loadState();
+  render();
+  wireEvents();
+  const cs = state.config.cloudSync || {};
+  if (cs.enabled && cs.firebaseDbUrl) {
+    pullFromFirebase();
+    if (typeof setInterval !== 'undefined') {
+      setInterval(pullFromFirebase, SYNC_POLL_INTERVAL_MS);
+    }
+  } else {
+    setSyncStatus('Cloud sync disabled');
+  }
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', () => {
-    loadState();
-    render();
-    wireEvents();
-    if (state.config.cloudSync.enabled) {
-      pullFromGist();
-      if (typeof setInterval !== 'undefined') {
-        setInterval(pullFromGist, SYNC_POLL_INTERVAL_MS);
-      }
+    if (isLoggedIn()) {
+      showApp();
+      bootstrap();
     } else {
-      setSyncStatus('Sync disabled');
+      showLogin();
+    }
+    const loginForm = document.getElementById('login-form');
+    if (loginForm) {
+      loginForm.addEventListener('submit', handleLogin);
     }
   });
 }
@@ -1079,12 +1136,20 @@ if (typeof module !== 'undefined' && module.exports) {
     addCSVToDistrict,
     importCSV,
     exportCSV,
-    pullFromGist,
-    pushToGist,
+    pullFromFirebase,
+    pushToFirebase,
     schedulePush,
     setSyncStatus,
+    isLoggedIn,
+    showLogin,
+    showApp,
+    handleLogin,
+    bootstrap,
     DEFAULT_CONFIG,
     SAMPLE_ROW,
     DEFAULT_DISTRICT_NAME,
+    AUTH_USERNAME,
+    AUTH_PASSWORD,
+    AUTH_STORAGE_KEY,
   };
 }

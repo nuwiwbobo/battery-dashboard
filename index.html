@@ -7,74 +7,84 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>Battery Cell Monitoring Dashboard</h1>
-    <div class="header-right">
-      <span id="sync-status">⏳ Syncing...</span>
-      <button id="reset-btn" type="button">Reset All</button>
-    </div>
-  </header>
+  <div id="login-overlay">
+    <form id="login-form">
+      <h2>Battery Dashboard</h2>
+      <label>Username <input type="text" id="login-username" autocomplete="username"></label>
+      <label>Password <input type="password" id="login-password" autocomplete="current-password"></label>
+      <button type="submit">Login</button>
+      <p id="login-error" hidden></p>
+    </form>
+  </div>
 
-  <section id="config-panel">
-    <h2>Configuration</h2>
-    <div class="config-grid">
-      <label>
-        Capacity profile
-        <select id="config-profile">
-          <option value="RSS">RSS</option>
-          <option value="TSS/ER">TSS/ER</option>
-        </select>
-      </label>
-      <label>
-        Healthy capacity (Ah)
-        <input type="text" inputmode="decimal" id="config-healthy">
-      </label>
-      <label>
-        Batas atas (V)
-        <input type="text" inputmode="decimal" id="config-batas-atas">
-      </label>
-      <label>
-        Batas bawah (V)
-        <input type="text" inputmode="decimal" id="config-batas-bawah">
-      </label>
-      <div class="config-info">
-        Over-current threshold: <strong id="oc-threshold">60 A</strong> (capacity / 5)
+  <div id="app-content" hidden>
+    <header>
+      <h1>Battery Cell Monitoring Dashboard</h1>
+      <div class="header-right">
+        <span id="sync-status">⏳ Syncing...</span>
+        <button id="reset-btn" type="button">Reset All</button>
       </div>
-      <div class="config-info">
-        IR baseline (active profile): <strong id="ir-baseline">0.75 mΩ</strong>
+    </header>
+
+    <section id="config-panel">
+      <h2>Configuration</h2>
+      <div class="config-grid">
+        <label>
+          Capacity profile
+          <select id="config-profile">
+            <option value="RSS">RSS</option>
+            <option value="TSS/ER">TSS/ER</option>
+          </select>
+        </label>
+        <label>
+          Healthy capacity (Ah)
+          <input type="text" inputmode="decimal" id="config-healthy">
+        </label>
+        <label>
+          Batas atas (V)
+          <input type="text" inputmode="decimal" id="config-batas-atas">
+        </label>
+        <label>
+          Batas bawah (V)
+          <input type="text" inputmode="decimal" id="config-batas-bawah">
+        </label>
+        <div class="config-info">
+          Over-current threshold: <strong id="oc-threshold">60 A</strong> (capacity / 5)
+        </div>
+        <div class="config-info">
+          IR baseline (active profile): <strong id="ir-baseline">0.75 mΩ</strong>
+        </div>
       </div>
-    </div>
 
-    <h2 class="config-section-heading">Cloud Sync</h2>
-    <div class="config-grid">
-      <label class="config-checkbox">
-        <input type="checkbox" id="config-cloud-sync-enabled">
-        Enable cloud sync
-      </label>
-      <label>
-        Gist ID
-        <input type="text" id="config-gist-id" autocomplete="off" spellcheck="false">
-      </label>
-      <label>
-        Gist token (GitHub PAT with <code>gist</code> scope)
-        <input type="password" id="config-gist-token" autocomplete="off" spellcheck="false">
-      </label>
-      <div class="config-info">
-        One-time setup. Each device needs its own token (or share one).
+      <h2 class="config-section-heading">Cloud Sync</h2>
+      <div class="config-grid">
+        <label class="config-checkbox">
+          <input type="checkbox" id="config-cloud-sync-enabled">
+          Enable cloud sync (Firebase Realtime Database)
+        </label>
+        <label>
+          Firebase database URL
+          <input type="text" id="cloud-sync-url" placeholder="https://your-project-default-rtdb.firebaseio.com">
+        </label>
+        <div class="config-info">
+          Create a Firebase project, enable Realtime Database, paste the URL here.
+          <br>Same URL on multiple devices = shared dashboard.
+          <br>Rules: <code>{".read": true, ".write": true}</code> (or use auth for stricter access).
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section id="districts-section">
-    <h2>Districts</h2>
-    <div id="districts-container"></div>
-    <div class="actions">
-      <button type="button" id="add-district-btn">+ New district</button>
-    </div>
-  </section>
+    <section id="districts-section">
+      <h2>Districts</h2>
+      <div id="districts-container"></div>
+      <div class="actions">
+        <button type="button" id="add-district-btn">+ New district</button>
+      </div>
+    </section>
 
-  <div id="banner" hidden></div>
+    <div id="banner" hidden></div>
+  </div>
 
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

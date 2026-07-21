@@ -27,6 +27,7 @@ class Element {
   }
   get innerHTML() { return this._innerHTML || ''; }
   set innerHTML(v) { this._innerHTML = v; }
+  focus() {}
   get className() {
     if (!this._classNameExplicit && this._classes.size > 0) {
       return Array.from(this._classes).join(' ');
@@ -78,11 +79,13 @@ const localStorage = {
   removeItem(k) { delete this._data[k]; },
 };
 const setTimeout = (fn, ms) => {};
+const setInterval = (fn, ms) => ({ unref: () => {} });
+const clearInterval = () => {};
 const confirm = () => true;  // always accept for tests
 
 const fs = await import('fs');
 const appCode = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-const wrapped = `(function(document, window, localStorage, setTimeout, confirm) {
+const wrapped = `(function(document, window, localStorage, setTimeout, setInterval, confirm) {
   ${appCode}
   return {
     getState,
@@ -109,15 +112,20 @@ const wrapped = `(function(document, window, localStorage, setTimeout, confirm) 
     addCSVToDistrict,
     importCSV,
     exportCSV,
-    pullFromGist,
-    pushToGist,
+    pullFromFirebase,
+    pushToFirebase,
     schedulePush,
     setSyncStatus,
+    isLoggedIn,
+    showLogin,
+    showApp,
+    handleLogin,
+    bootstrap,
   };
 })`;
 const fn = eval(wrapped);
-const api = fn(document, window, localStorage, setTimeout, confirm);
-const { computeRowDerived, wireEvents } = api;
+const api = fn(document, window, localStorage, setTimeout, setInterval, confirm);
+const { computeRowDerived, wireEvents, handleLogin, isLoggedIn, pullFromFirebase, pushToFirebase, schedulePush, setSyncStatus } = api;
 let state = api.getState();
 
 function refreshState() { state = api.getState(); }
@@ -445,19 +453,22 @@ assert(reparsed[1][0] === '2', 'reparsed[1][0] = "2" (district-local)');
 assert(reparsed[1][1] === '2.6', 'reparsed[1][1] = "2.6"');
 
 // ====================================================================
-// Feature: Gist cloud sync (function existence only — fetch not stubbed in Node)
+// Feature: Firebase cloud sync (function existence only — fetch not stubbed in Node)
 // ====================================================================
 
-console.log('\n=== Test 30: Gist sync functions are defined ===');
-assert(typeof api.pullFromGist === 'function', 'pullFromGist is a function');
-assert(typeof api.pushToGist === 'function', 'pushToGist is a function');
+console.log('\n=== Test 30: Firebase sync functions are defined ===');
+assert(typeof api.pullFromFirebase === 'function', 'pullFromFirebase is a function');
+assert(typeof api.pushToFirebase === 'function', 'pushToFirebase is a function');
 assert(typeof api.schedulePush === 'function', 'schedulePush is a function');
 assert(typeof api.setSyncStatus === 'function', 'setSyncStatus is a function');
 assert(typeof api.importCSV === 'function', 'importCSV is a function');
 assert(typeof api.exportCSV === 'function', 'exportCSV is a function');
+assert(typeof api.handleLogin === 'function', 'handleLogin is a function');
+assert(typeof api.isLoggedIn === 'function', 'isLoggedIn is a function');
+assert(typeof api.bootstrap === 'function', 'bootstrap is a function');
 
 // ====================================================================
-// Feature: Cloud sync config (per-user inputs instead of hardcoded token)
+// Feature: Cloud sync config (Firebase DB URL instead of Gist creds)
 // ====================================================================
 
 console.log('\n=== Test 31: DEFAULT_CONFIG has cloudSync object with safe defaults ===');
@@ -465,10 +476,12 @@ console.log('\n=== Test 31: DEFAULT_CONFIG has cloudSync object with safe defaul
 refreshState();
 assert(state.config.cloudSync !== undefined, 'cloudSync object present');
 assert(state.config.cloudSync.enabled === false, 'cloudSync.enabled defaults to false');
-assert(state.config.cloudSync.gistId === '', 'cloudSync.gistId defaults to empty string');
-assert(state.config.cloudSync.gistToken === '', 'cloudSync.gistToken defaults to empty string');
+assert(state.config.cloudSync.firebaseDbUrl === '', 'cloudSync.firebaseDbUrl defaults to empty string');
+// Legacy Gist fields must NOT exist on the new config shape
+assert(state.config.cloudSync.gistId === undefined, 'cloudSync.gistId removed');
+assert(state.config.cloudSync.gistToken === undefined, 'cloudSync.gistToken removed');
 
-console.log('\n=== Test 32: loadState preserves cloudSync from localStorage ===');
+console.log('\n=== Test 32: loadState preserves cloudSync (firebaseDbUrl) from localStorage ===');
 localStorage._data['battery-dashboard-state-v1'] = JSON.stringify({
   config: {
     capacityProfile: 'RSS',
@@ -477,8 +490,7 @@ localStorage._data['battery-dashboard-state-v1'] = JSON.stringify({
     batasBawah: 2.0,
     cloudSync: {
       enabled: true,
-      gistId: 'fake-gist-id-for-test',
-      gistToken: 'fake-test-token',
+      firebaseDbUrl: 'https://example-rtdb.firebaseio.com',
     },
   },
   rows: [{ id: 1, cellVoltage: 2.5, ir: 0.5, irUnit: 'mohm', rippleVoltage: 0.005, measuredCapacity: 280, temperature: 25 }],
@@ -487,20 +499,17 @@ localStorage._data['battery-dashboard-state-v1'] = JSON.stringify({
 api.loadState();
 refreshState();
 assert(state.config.cloudSync.enabled === true, 'cloudSync.enabled loaded from storage');
-assert(state.config.cloudSync.gistId === 'fake-gist-id-for-test', 'cloudSync.gistId loaded from storage');
-assert(state.config.cloudSync.gistToken === 'fake-test-token', 'cloudSync.gistToken loaded from storage');
+assert(state.config.cloudSync.firebaseDbUrl === 'https://example-rtdb.firebaseio.com', 'cloudSync.firebaseDbUrl loaded from storage');
 
-console.log('\n=== Test 33: saveState persists cloudSync to localStorage ===');
+console.log('\n=== Test 33: saveState persists cloudSync (firebaseDbUrl) to localStorage ===');
 api.loadState();  // reset to defaults
 refreshState();
 state.config.cloudSync.enabled = true;
-state.config.cloudSync.gistId = 'persist-test-id';
-state.config.cloudSync.gistToken = 'persist-test-token';
+state.config.cloudSync.firebaseDbUrl = 'https://persist-test.firebaseio.com';
 api.saveState();
 const persisted = JSON.parse(localStorage._data['battery-dashboard-state-v1']);
 assert(persisted.config.cloudSync.enabled === true, 'cloudSync.enabled persisted');
-assert(persisted.config.cloudSync.gistId === 'persist-test-id', 'cloudSync.gistId persisted');
-assert(persisted.config.cloudSync.gistToken === 'persist-test-token', 'cloudSync.gistToken persisted');
+assert(persisted.config.cloudSync.firebaseDbUrl === 'https://persist-test.firebaseio.com', 'cloudSync.firebaseDbUrl persisted');
 
 console.log('\n=== Test 34: Toggling cloud-sync checkbox updates state ===');
 api.loadState();  // reset to defaults (cloudSync.enabled = false)
@@ -513,7 +522,7 @@ csEnabledEl.checked = false;
 csEnabledEl.dispatchEvent({ type: 'change', target: csEnabledEl });
 assert(state.config.cloudSync.enabled === false, 'toggling checkbox OFF updates state');
 
-console.log('\n=== Test 35: Disabling cloud sync sets status to "Sync disabled" ===');
+console.log('\n=== Test 35: Disabling cloud sync sets status to "Cloud sync disabled" ===');
 api.loadState();
 refreshState();
 const syncStatusEl = document.getElementById('sync-status');
@@ -521,20 +530,148 @@ const syncStatusEl = document.getElementById('sync-status');
 // fires. In our mock, DOMContentLoaded never fires, so the status is whatever the
 // fake element started with (empty). Manually call setSyncStatus via the API and
 // verify it lands on the DOM element.
-api.setSyncStatus('Sync disabled');
-assert(syncStatusEl.textContent === 'Sync disabled', 'setSyncStatus("Sync disabled") reaches DOM');
+api.setSyncStatus('Cloud sync disabled');
+assert(syncStatusEl.textContent === 'Cloud sync disabled', 'setSyncStatus("Cloud sync disabled") reaches DOM');
 
-console.log('\n=== Test 36: Gist ID and token inputs update state on input ===');
+console.log('\n=== Test 36: Firebase database URL input updates state on input ===');
 api.loadState();
 refreshState();
-const csIdEl = document.getElementById('config-gist-id');
-csIdEl.value = 'new-gist-id';
-csIdEl.dispatchEvent({ type: 'input', target: csIdEl });
-assert(state.config.cloudSync.gistId === 'new-gist-id', 'gistId input updates state');
+const csUrlEl = document.getElementById('cloud-sync-url');
+csUrlEl.value = 'https://new-url.firebaseio.com';
+csUrlEl.dispatchEvent({ type: 'input', target: csUrlEl });
+assert(state.config.cloudSync.firebaseDbUrl === 'https://new-url.firebaseio.com', 'firebaseDbUrl input updates state');
 
-const csTokenEl = document.getElementById('config-gist-token');
-csTokenEl.value = 'new-token-value';
-csTokenEl.dispatchEvent({ type: 'input', target: csTokenEl });
-assert(state.config.cloudSync.gistToken === 'new-token-value', 'gistToken input updates state');
+console.log('\n=== Test 37: pullFromFirebase no-op when cloudSync is disabled ===');
+api.loadState();
+refreshState();
+const originalFetch = globalThis.fetch;
+let fetchCalls = 0;
+globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true, json: async () => ({}) }); };
+try {
+  api.pullFromFirebase();
+  assert.equal = assert;  // alias for readability
+  assert(fetchCalls === 0, 'fetch NOT called when cloudSync is disabled');
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
+console.log('\n=== Test 38: pullFromFirebase no-op when URL is empty (even if enabled) ===');
+api.loadState();
+refreshState();
+state.config.cloudSync.enabled = true;
+state.config.cloudSync.firebaseDbUrl = '';
+let fetchCalls2 = 0;
+globalThis.fetch = () => { fetchCalls2++; return Promise.resolve({ ok: true, json: async () => ({}) }); };
+try {
+  api.pullFromFirebase();
+  assert(fetchCalls2 === 0, 'fetch NOT called when URL is empty');
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
+console.log('\n=== Test 39: pullFromFirebase calls fetch when URL is set ===');
+api.loadState();
+refreshState();
+state.config.cloudSync.enabled = true;
+state.config.cloudSync.firebaseDbUrl = 'https://test.firebaseio.com';
+let fetchCalls3 = 0;
+let lastUrl = null;
+globalThis.fetch = (url) => {
+  fetchCalls3++;
+  lastUrl = url;
+  return Promise.resolve({ ok: true, json: async () => ({}) });
+};
+try {
+  api.pullFromFirebase();
+  assert(fetchCalls3 === 1, 'fetch called once');
+  assert(lastUrl === 'https://test.firebaseio.com/state.json', 'fetch hits <url>/state.json');
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
+console.log('\n=== Test 40: pullFromFirebase updates state when remote is newer ===');
+api.loadState();
+refreshState();
+state.config.cloudSync.enabled = true;
+state.config.cloudSync.firebaseDbUrl = 'https://pull-test.firebaseio.com';
+state.lastSyncedAt = '2020-01-01T00:00:00.000Z';  // old timestamp
+let fetchCalls4 = 0;
+globalThis.fetch = () => {
+  fetchCalls4++;
+  return Promise.resolve({
+    ok: true,
+    json: async () => ({
+      version: 1,
+      updatedAt: '2026-07-21T12:00:00.000Z',
+      config: { capacityProfile: 'TSS/ER', healthyCapacity: 200, batasAtas: 2.5, batasBawah: 2.0 },
+      districts: [{ id: 99, name: 'RemoteDistrict', rowIds: [] }],
+      rows: [{ id: 77, cellVoltage: 1.5, ir: 0.001, irUnit: 'ohm', rippleVoltage: 0.01, measuredCapacity: 100, temperature: 40 }],
+    }),
+  });
+};
+try {
+  await api.pullFromFirebase();
+  assert(fetchCalls4 === 1, 'fetch called');
+  refreshState();
+  assert(state.lastSyncedAt === '2026-07-21T12:00:00.000Z', 'lastSyncedAt updated to remote');
+  assert(state.districts.length === 1 && state.districts[0].name === 'RemoteDistrict', 'districts replaced from remote');
+  assert(state.rows.length === 1 && state.rows[0].id === 77, 'rows replaced from remote');
+  assert(state.config.capacityProfile === 'TSS/ER', 'config updated from remote');
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
+// ====================================================================
+// Feature: Login screen
+// ====================================================================
+
+console.log('\n=== Test 41: isLoggedIn is false initially (no localStorage entry) ===');
+localStorage._data = {};  // clear auth
+api.loadState();
+refreshState();
+assert(api.isLoggedIn() === false, 'isLoggedIn() returns false with no entry');
+
+console.log('\n=== Test 42: isLoggedIn is true after correct login ===');
+localStorage._data = {};
+const userEl = document.getElementById('login-username');
+const passEl = document.getElementById('login-password');
+const errEl = document.getElementById('login-error');
+userEl.value = 'admin';
+passEl.value = 'battery2026';
+api.handleLogin({ preventDefault: () => {} });
+assert(api.isLoggedIn() === true, 'isLoggedIn() is true after correct login');
+assert(localStorage._data['battery-dashboard-auth'] === 'ok', 'auth stored in localStorage');
+
+console.log('\n=== Test 43: isLoggedIn stays false after wrong password (error shown) ===');
+localStorage._data = {};
+errEl.hidden = true;
+errEl.textContent = '';
+userEl.value = 'admin';
+passEl.value = 'wrong';
+api.handleLogin({ preventDefault: () => {} });
+assert(api.isLoggedIn() === false, 'isLoggedIn stays false after wrong password');
+assert(errEl.hidden === false, 'login-error is shown');
+assert(errEl.textContent === 'Invalid username or password', 'error message set');
+
+console.log('\n=== Test 44: isLoggedIn stays false after wrong username ===');
+localStorage._data = {};
+errEl.hidden = true;
+userEl.value = 'not-admin';
+passEl.value = 'battery2026';
+api.handleLogin({ preventDefault: () => {} });
+assert(api.isLoggedIn() === false, 'isLoggedIn stays false after wrong username');
+
+console.log('\n=== Test 45: showLogin hides app-content and shows overlay ===');
+localStorage._data = {};
+api.showLogin();
+const overlay = document.getElementById('login-overlay');
+const app = document.getElementById('app-content');
+assert(overlay.hidden === false, 'login overlay visible after showLogin');
+assert(app.hidden === true, 'app content hidden after showLogin');
+
+console.log('\n=== Test 46: showApp shows app-content and hides overlay ===');
+api.showApp();
+assert(document.getElementById('login-overlay').hidden === true, 'overlay hidden after showApp');
+assert(document.getElementById('app-content').hidden === false, 'app content visible after showApp');
 
 console.log('\nAll integration tests PASSED');
