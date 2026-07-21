@@ -248,6 +248,18 @@ function exportCSV(districtId) {
 // for security notes and the rules the user should apply.
 
 let pushTimeout = null;
+// Add baseline snapshot and dirty flag to track local modifications
+let isDirty = false;
+let localBaselineState = null;
+
+/**
+ * Call this helper whenever the user updates data locally in your app.
+ * It marks the state as dirty and triggers schedulePush().
+ */
+function markStateModified() {
+  isDirty = true;
+  schedulePush();
+}
 
 async function pullFromFirebase() {
   if (typeof fetch === 'undefined') return;
@@ -263,10 +275,11 @@ async function pullFromFirebase() {
       setSyncStatus('No remote state');
       return;
     }
-    if (remote.updatedAt === state.lastSyncedAt) {
+    if (remote.updatedAt === state.lastSyncedAt && !isDirty) {
       setSyncStatus('Synced');
       return;
     }
+
     state = {
       config: { ...DEFAULT_CONFIG, ...(remote.config || {}) },
       districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
@@ -274,6 +287,11 @@ async function pullFromFirebase() {
       lastSyncedAt: remote.updatedAt,
       banner: null,
     };
+
+    // Save baseline snapshot of synced data
+    localBaselineState = JSON.parse(JSON.stringify(state));
+    isDirty = false;
+
     saveState();
     render();
     setSyncStatus('Synced');
@@ -285,26 +303,63 @@ async function pullFromFirebase() {
 
 async function pushToFirebase() {
   if (typeof fetch === 'undefined') return;
-  const updatedAt = new Date().toISOString();
-  const payload = {
-    version: 1,
-    updatedAt,
-    config: state.config,
-    districts: state.districts,
-    rows: state.rows,
-  };
+
+  // 1. CHECK BEFORE UPDATING: If no local modifications were made, do nothing
+  if (!isDirty) {
+    setSyncStatus('Synced');
+    return;
+  }
+
   try {
     setSyncStatus('Syncing...');
-    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`, {
-      method: 'PUT',
+    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
+
+    // 2. CHECK REMOTE TIMESTAMP: Verify if another device saved newer data in the meantime
+    const remoteCheckRes = await fetch(`${baseUrl}/state/updatedAt.json`);
+    if (remoteCheckRes.ok) {
+      const remoteUpdatedAt = await remoteCheckRes.json();
+      if (remoteUpdatedAt && remoteUpdatedAt > (state.lastSyncedAt || '')) {
+        // Remote data is newer: pull remote changes first to prevent wiping them
+        await pullFromFirebase();
+        if (!isDirty) return; // If local changes were resolved, exit
+      }
+    }
+
+    const updatedAt = new Date().toISOString();
+
+    // 3. BUILD PATCH PAYLOAD: Only include sections that were actually changed
+    const payload = {
+      version: 1,
+      updatedAt: updatedAt
+    };
+
+    if (JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config)) {
+      payload.config = state.config;
+    }
+    if (JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts)) {
+      payload.districts = state.districts;
+    }
+    if (JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows)) {
+      payload.rows = state.rows;
+    }
+
+    // 4. USE PATCH INSTEAD OF PUT: Merges updates into Firebase without overwriting un-edited fields
+    const res = await fetch(`${baseUrl}/state.json`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+
     if (!res.ok) {
       setSyncStatus('Sync error');
       return;
     }
+
+    // Update sync tracking status
     state.lastSyncedAt = updatedAt;
+    localBaselineState = JSON.parse(JSON.stringify(state));
+    isDirty = false;
+
     saveState();
     setSyncStatus('Synced');
   } catch (e) {
@@ -316,6 +371,10 @@ async function pushToFirebase() {
 function schedulePush() {
   if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
   if (typeof setTimeout === 'undefined') return;
+  
+  // Skip scheduling if there are no unpushed local changes
+  if (!isDirty) return;
+
   if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
     clearTimeout(pushTimeout);
   }
