@@ -642,6 +642,11 @@ api.handleLogin({ preventDefault: () => {} });
 assert(api.isLoggedIn() === true, 'isLoggedIn() is true after correct login');
 assert(localStorage._data['battery-dashboard-auth'] === 'ok', 'auth stored in localStorage');
 
+console.log('\n=== Test 42b: handleLogin calls preventDefault when event is provided ===');
+let preventDefaultCalled = false;
+api.handleLogin({ preventDefault: () => { preventDefaultCalled = true; }, stopPropagation: () => {} });
+assert(preventDefaultCalled, 'preventDefault was called on the event');
+
 console.log('\n=== Test 43: isLoggedIn stays false after wrong password (error shown) ===');
 localStorage._data = {};
 errEl.hidden = true;

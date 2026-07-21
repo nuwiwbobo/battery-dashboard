@@ -1,6 +1,6 @@
 'use strict';
 
-// Build: 2026-07-21-r9 (Firebase sync + login screen)
+// Build: 2026-07-21-r10 (login form backup handlers + onsubmit fallback)
 //
 // SECURITY NOTE: This dashboard uses client-side authentication (hardcoded
 // username/password in this source file) and a Firebase Realtime Database
@@ -354,7 +354,9 @@ function showApp() {
 }
 
 function handleLogin(e) {
+  // Prevent default form submission (which would navigate to ?username=...&password=...)
   if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
   const userEl = document.getElementById('login-username');
   const passEl = document.getElementById('login-password');
   const errEl = document.getElementById('login-error');
@@ -365,13 +367,18 @@ function handleLogin(e) {
       localStorage.setItem(AUTH_STORAGE_KEY, 'ok');
     }
     showApp();
-    bootstrap();
+    if (typeof bootstrap === 'function') bootstrap();
   } else {
     if (errEl) {
       errEl.textContent = 'Invalid username or password';
       errEl.hidden = false;
     }
   }
+}
+
+function handleLoginClick() {
+  // Backup handler: also called from button click in addition to form submit
+  handleLogin({ preventDefault: () => {}, stopPropagation: () => {} });
 }
 
 // ====================================================================
@@ -1112,9 +1119,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     } else {
       showLogin();
     }
+    // Wire login form (submit event) AND login button (click event) as backup
     const loginForm = document.getElementById('login-form');
     if (loginForm) {
       loginForm.addEventListener('submit', handleLogin);
+      const loginButton = loginForm.querySelector('button[type="submit"]');
+      if (loginButton) {
+        loginButton.addEventListener('click', (e) => {
+          e.preventDefault();
+          handleLogin(e);
+        });
+      }
     }
   });
 }
