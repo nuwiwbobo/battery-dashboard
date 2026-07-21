@@ -85,34 +85,50 @@ function voltageStatus(absDeviation, amanMax, cekMax) {
 //   - combined zone is bad                → Tidak Layak
 //   - SOH ≤ 80% (any zone)                → Cek
 function batteryStatus(cellVoltage, ir, soh, batasAtas, batasBawah, irBaseline) {
+  // 1. Input Validation & Null Checks
   if (cellVoltage == null || ir == null || soh == null) return null;
   if (isNaN(cellVoltage) || isNaN(ir) || isNaN(soh)) return null;
   if (batasAtas == null || batasBawah == null || irBaseline == null) return null;
   if (batasAtas <= batasBawah) return null;
   if (irBaseline <= 0) return null;
 
-  // Classify V zone: 0=ok, 1=warning, 2=bad
-  let vZone;
-  if (cellVoltage > batasAtas) vZone = 0;
-  else if (cellVoltage > batasBawah) vZone = 1;
-  else vZone = 2;
+  // 2. Logic Implementation based on specified conditions
+  
+  // --- Case 1: SOH > 80% ---
+  if (soh > 80) {
+    if (ir < irBaseline * 1.2 && cellVoltage > batasAtas) {
+      return 'Aman';
+    }
+    if (ir > irBaseline * 1.2 && cellVoltage < batasAtas) {
+      return 'Cek'; // WARNING -> 'Cek'
+    }
+  } 
+  
+  // --- Case 2: SOH <= 80% (soh < 80% branch) ---
+  else {
+    // Condition 1: BAD / Tidak Layak
+    // (ir > irBaseline * 1.5 OR cellVoltage < batasBawah)
+    if (ir > irBaseline * 1.5 || cellVoltage < batasBawah) {
+      return 'Tidak Layak'; // BAD -> 'Tidak Layak'
+    }
 
-  // Classify IR zone: 0=ok, 1=warning, 2=bad
-  let irZone;
-  if (ir < irBaseline * 1.2) irZone = 0;
-  else if (ir <= irBaseline * 1.5) irZone = 1;
-  else irZone = 2;
+    // Condition 2: WARNING / Cek
+    // (ir Baseline * 1.2 < ir < irBaseline * 1.5 OR batasBawah < cellVoltage < batasAtas)
+    const isIrInWarningRange = (ir > irBaseline * 1.2) && (ir < irBaseline * 1.5);
+    const isVoltageInWarningRange = (cellVoltage > batasBawah) && (cellVoltage < batasAtas);
 
-  // Worst-of-both: take the larger zone number
-  const worstZone = Math.max(vZone, irZone);
+    if (isIrInWarningRange || isVoltageInWarningRange) {
+      return 'Cek'; // WARNING -> 'Cek'
+    }
 
-  // SOH gate: must be > 80% to be Aman
-  const sohOk = soh > 80;
+    // Condition 3: AMAN
+    if (ir < irBaseline * 1.2 && cellVoltage > batasAtas) {
+      return 'Aman';
+    }
+  }
 
-  if (worstZone === 2) return 'Tidak Layak';
-  if (worstZone === 1) return 'Cek';
-  // worstZone === 0
-  return sohOk ? 'Aman' : 'Cek';
+  // Fallback status for border/uncovered condition boundaries (e.g., cellVoltage == batasAtas)
+  return 'Cek';
 }
 
 function mean(arr) {
