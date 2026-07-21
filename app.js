@@ -246,15 +246,12 @@ function exportCSV(districtId) {
 // directly (no Firebase SDK) — PUT to write, GET to read. No auth token
 // is required because access is gated by the URL itself. See README
 // for security notes and the rules the user should apply.
-
-let pushTimeout = null;
-// Add baseline snapshot and dirty flag to track local modifications
-let isDirty = false;
-let localBaselineState = null;
+let isDirty = false; // Tracks if local state has un-pushed changes
+let localBaselineState = null; // Snapshot of last synced state for comparison
 
 /**
- * Call this helper whenever the user updates data locally in your app.
- * It marks the state as dirty and triggers schedulePush().
+ * Call this function whenever the user modifies data locally.
+ * It marks the state as modified and schedules the debounced push.
  */
 function markStateModified() {
   isDirty = true;
@@ -275,11 +272,14 @@ async function pullFromFirebase() {
       setSyncStatus('No remote state');
       return;
     }
+
+    // Don't pull over local uncommitted changes unless necessary
     if (remote.updatedAt === state.lastSyncedAt && !isDirty) {
       setSyncStatus('Synced');
       return;
     }
 
+    // Merge or accept remote state
     state = {
       config: { ...DEFAULT_CONFIG, ...(remote.config || {}) },
       districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
@@ -288,7 +288,7 @@ async function pullFromFirebase() {
       banner: null,
     };
 
-    // Save baseline snapshot of synced data
+    // Deep clone baseline to track future local changes
     localBaselineState = JSON.parse(JSON.stringify(state));
     isDirty = false;
 
@@ -304,7 +304,7 @@ async function pullFromFirebase() {
 async function pushToFirebase() {
   if (typeof fetch === 'undefined') return;
 
-  // 1. CHECK BEFORE UPDATING: If no local modifications were made, do nothing
+  // 1. GUARD: If nothing was changed locally, skip the push entirely
   if (!isDirty) {
     setSyncStatus('Synced');
     return;
@@ -314,40 +314,43 @@ async function pushToFirebase() {
     setSyncStatus('Syncing...');
     const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
 
-    // 2. CHECK REMOTE TIMESTAMP: Verify if another device saved newer data in the meantime
+    // 2. CONCURRENCY CHECK: Fetch remote metadata to see if another device updated state
     const remoteCheckRes = await fetch(`${baseUrl}/state/updatedAt.json`);
     if (remoteCheckRes.ok) {
       const remoteUpdatedAt = await remoteCheckRes.json();
-      if (remoteUpdatedAt && remoteUpdatedAt > (state.lastSyncedAt || '')) {
-        // Remote data is newer: pull remote changes first to prevent wiping them
+      
+      // If remote has newer data than our last sync point, pull first to avoid overwriting
+      if (remoteUpdatedAt && remoteUpdatedAt > state.lastSyncedAt) {
+        console.warn('Remote data is newer. Merging before push...');
         await pullFromFirebase();
-        if (!isDirty) return; // If local changes were resolved, exit
+        // After pull, re-evaluate if local changes still need to be pushed
+        if (!isDirty) return;
       }
     }
 
     const updatedAt = new Date().toISOString();
 
-    // 3. BUILD PATCH PAYLOAD: Only include sections that were actually changed
-    const payload = {
-      version: 1,
-      updatedAt: updatedAt
+    // 3. DIFF & PATCH: Construct a fine-grained payload containing ONLY modified nodes
+    const deltaPayload = {
+      updatedAt: updatedAt,
+      version: 1
     };
 
     if (JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config)) {
-      payload.config = state.config;
+      deltaPayload.config = state.config;
     }
     if (JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts)) {
-      payload.districts = state.districts;
+      deltaPayload.districts = state.districts;
     }
     if (JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows)) {
-      payload.rows = state.rows;
+      deltaPayload.rows = state.rows;
     }
 
-    // 4. USE PATCH INSTEAD OF PUT: Merges updates into Firebase without overwriting un-edited fields
+    // 4. Send HTTP PATCH instead of PUT to update only modified fields
     const res = await fetch(`${baseUrl}/state.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(deltaPayload),
     });
 
     if (!res.ok) {
@@ -355,7 +358,7 @@ async function pushToFirebase() {
       return;
     }
 
-    // Update sync tracking status
+    // 5. Update local tracking state
     state.lastSyncedAt = updatedAt;
     localBaselineState = JSON.parse(JSON.stringify(state));
     isDirty = false;
@@ -372,7 +375,7 @@ function schedulePush() {
   if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
   if (typeof setTimeout === 'undefined') return;
   
-  // Skip scheduling if there are no unpushed local changes
+  // Do not schedule if there are no local changes
   if (!isDirty) return;
 
   if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
