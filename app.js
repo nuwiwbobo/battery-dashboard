@@ -1,14 +1,12 @@
 'use strict';
 
-// Build: 2026-07-21-r10 (login form backup handlers + onsubmit fallback)
+// Build: 2026-07-21-r11 (remove login, hardcode Firebase URL, auto-sync)
 //
-// SECURITY NOTE: This dashboard uses client-side authentication (hardcoded
-// username/password in this source file) and a Firebase Realtime Database
-// URL stored in localStorage. Anyone with the source code can extract the
-// credentials and the URL. This is the same trust model as the previous
-// Gist-based sync (which used a hardcoded token in the source). Suitable
-// for personal/single-tenant use only. Do not deploy to a public host
-// without adding proper server-side auth.
+// SECURITY NOTE: This dashboard has NO authentication. It syncs directly
+// to a public Firebase Realtime Database (URL hardcoded below). Anyone
+// with the URL can read and modify the state. Suitable for a private
+// team or a single shared dashboard; for public deployment, add Firebase
+// Authentication and tighten the database rules.
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -228,21 +226,18 @@ function exportCSV(districtId) {
 // Firebase Realtime Database cloud sync
 // ====================================================================
 //
-// State is stored at `<firebaseDbUrl>/state.json`. The REST API is used
+// State is stored at FIREBASE_DB_URL + '/state.json'. The REST API is used
 // directly (no Firebase SDK) — PUT to write, GET to read. No auth token
-// is required because access is gated by the URL itself. See index.html
+// is required because access is gated by the URL itself. See README
 // for security notes and the rules the user should apply.
 
 let pushTimeout = null;
 
 async function pullFromFirebase() {
-  const cs = state.config.cloudSync;
-  if (!cs || !cs.enabled || !cs.firebaseDbUrl) return;
-  const url = cs.firebaseDbUrl;
   if (typeof fetch === 'undefined') return;
   try {
     setSyncStatus('Syncing...');
-    const res = await fetch(`${url.replace(/\/$/, '')}/state.json`);
+    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
     if (!res.ok) {
       setSyncStatus('Sync error');
       return;
@@ -257,7 +252,7 @@ async function pullFromFirebase() {
       return;
     }
     state = {
-      config: { ...DEFAULT_CONFIG, ...(remote.config || {}), cloudSync: state.config.cloudSync },
+      config: { ...DEFAULT_CONFIG, ...(remote.config || {}) },
       districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
       rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
       lastSyncedAt: remote.updatedAt,
@@ -273,21 +268,18 @@ async function pullFromFirebase() {
 }
 
 async function pushToFirebase() {
-  const cs = state.config.cloudSync;
-  if (!cs || !cs.enabled || !cs.firebaseDbUrl) return;
-  const url = cs.firebaseDbUrl;
   if (typeof fetch === 'undefined') return;
   const updatedAt = new Date().toISOString();
   const payload = {
     version: 1,
     updatedAt,
-    config: { ...state.config, cloudSync: undefined },
+    config: state.config,
     districts: state.districts,
     rows: state.rows,
   };
   try {
     setSyncStatus('Syncing...');
-    const res = await fetch(`${url.replace(/\/$/, '')}/state.json`, {
+    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -321,74 +313,22 @@ function setSyncStatus(text) {
 }
 
 // ====================================================================
-// Client-side login (security model: see SECURITY NOTE at top of file)
+// Firebase sync config
 // ====================================================================
 
-const AUTH_USERNAME = 'admin';
-const AUTH_PASSWORD = 'battery2026';
-const AUTH_STORAGE_KEY = 'battery-dashboard-auth';
-
-function isLoggedIn() {
-  if (typeof localStorage === 'undefined') return false;
-  return localStorage.getItem(AUTH_STORAGE_KEY) === 'ok';
-}
-
-function showLogin() {
-  if (typeof document === 'undefined') return;
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) overlay.hidden = false;
-  const app = document.getElementById('app-content');
-  if (app) app.hidden = true;
-  const err = document.getElementById('login-error');
-  if (err) err.hidden = true;
-  const userEl = document.getElementById('login-username');
-  if (userEl) userEl.focus();
-}
-
-function showApp() {
-  if (typeof document === 'undefined') return;
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) overlay.hidden = true;
-  const app = document.getElementById('app-content');
-  if (app) app.hidden = false;
-}
-
-function handleLogin(e) {
-  // Prevent default form submission (which would navigate to ?username=...&password=...)
-  if (e && typeof e.preventDefault === 'function') e.preventDefault();
-  if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
-  const userEl = document.getElementById('login-username');
-  const passEl = document.getElementById('login-password');
-  const errEl = document.getElementById('login-error');
-  const u = userEl ? userEl.value : '';
-  const p = passEl ? passEl.value : '';
-  if (u === AUTH_USERNAME && p === AUTH_PASSWORD) {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(AUTH_STORAGE_KEY, 'ok');
-    }
-    showApp();
-    if (typeof bootstrap === 'function') bootstrap();
-  } else {
-    if (errEl) {
-      errEl.textContent = 'Invalid username or password';
-      errEl.hidden = false;
-    }
-  }
-}
-
-function handleLoginClick() {
-  // Backup handler: also called from button click in addition to form submit
-  handleLogin({ preventDefault: () => {}, stopPropagation: () => {} });
-}
+// Hardcoded Firebase Realtime Database URL — no login, no user setup required.
+// All devices using this URL share the same dashboard state.
+// Security: anyone with the URL can read/write. To restrict, add Firebase Auth
+// and tighten the rules at https://console.firebase.google.com/.
+const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
+const SYNC_POLL_INTERVAL_MS = 30000;
+const SYNC_PUSH_DEBOUNCE_MS = 5000;
 
 // ====================================================================
 // State management (browser-only)
 // ====================================================================
 
 const STORAGE_KEY = 'battery-dashboard-state-v1';
-
-const SYNC_POLL_INTERVAL_MS = 30000;
-const SYNC_PUSH_DEBOUNCE_MS = 5000;
 
 const DEFAULT_DISTRICT_NAME = 'Default';
 
@@ -401,10 +341,6 @@ const DEFAULT_CONFIG = {
   batasBawah: 2.0,
   irBaselineRss: 0.00075,      // 0.75 mΩ
   irBaselineTssEr: 0.00085,    // 0.85 mΩ
-  cloudSync: {
-    enabled: false,
-    firebaseDbUrl: '',
-  },
 };
 
 const SAMPLE_ROW = {
@@ -511,12 +447,6 @@ function loadState() {
         batasBawah: (typeof parsed.config.batasBawah === 'number' && !isNaN(parsed.config.batasBawah))
           ? parsed.config.batasBawah
           : DEFAULT_CONFIG.batasBawah,
-        cloudSync: {
-          enabled: parsed.config.cloudSync?.enabled === true,
-          firebaseDbUrl: typeof parsed.config.cloudSync?.firebaseDbUrl === 'string'
-            ? parsed.config.cloudSync.firebaseDbUrl
-            : '',
-        },
       },
       rows,
       districts,
@@ -630,10 +560,6 @@ function renderConfig() {
   if (atasEl) atasEl.value = state.config.batasAtas;
   const bawahEl = document.getElementById('config-batas-bawah');
   if (bawahEl) bawahEl.value = state.config.batasBawah;
-  const csEnabledEl = document.getElementById('config-cloud-sync-enabled');
-  if (csEnabledEl) csEnabledEl.checked = state.config.cloudSync.enabled;
-  const csUrlEl = document.getElementById('cloud-sync-url');
-  if (csUrlEl) csUrlEl.value = state.config.cloudSync.firebaseDbUrl;
   updateThresholdDisplay();
   updateBaselineDisplay();
 }
@@ -1059,37 +985,7 @@ function wireEvents() {
     });
   }
 
-  // Config: cloud sync enabled
-  const csEnabledEl = document.getElementById('config-cloud-sync-enabled');
-  if (csEnabledEl) {
-    csEnabledEl.addEventListener('change', () => {
-      state.config.cloudSync.enabled = csEnabledEl.checked;
-      saveState();
-      if (state.config.cloudSync.enabled && state.config.cloudSync.firebaseDbUrl) {
-        pullFromFirebase();
-      } else {
-        setSyncStatus('Cloud sync disabled');
-      }
-    });
-  }
-
-  // Config: Firebase database URL
-  const csUrlEl = document.getElementById('cloud-sync-url');
-  if (csUrlEl) {
-    csUrlEl.addEventListener('input', () => {
-      state.config.cloudSync.firebaseDbUrl = csUrlEl.value;
-      saveState();
-      if (state.config.cloudSync.enabled && state.config.cloudSync.firebaseDbUrl) {
-        pullFromFirebase();
-      }
-    });
-  }
-
-  // Login form
-  const loginForm = document.getElementById('login-form');
-  if (loginForm) {
-    loginForm.addEventListener('submit', handleLogin);
-  }
+  // No more cloud sync input handlers — sync is hardcoded and automatic
 }
 
 // ====================================================================
@@ -1100,37 +996,16 @@ function bootstrap() {
   loadState();
   render();
   wireEvents();
-  const cs = state.config.cloudSync || {};
-  if (cs.enabled && cs.firebaseDbUrl) {
-    pullFromFirebase();
-    if (typeof setInterval !== 'undefined') {
-      setInterval(pullFromFirebase, SYNC_POLL_INTERVAL_MS);
-    }
-  } else {
-    setSyncStatus('Cloud sync disabled');
+  // Always sync with Firebase — no enable flag, no URL input required
+  pullFromFirebase();
+  if (typeof setInterval !== 'undefined') {
+    setInterval(pullFromFirebase, SYNC_POLL_INTERVAL_MS);
   }
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', () => {
-    if (isLoggedIn()) {
-      showApp();
-      bootstrap();
-    } else {
-      showLogin();
-    }
-    // Wire login form (submit event) AND login button (click event) as backup
-    const loginForm = document.getElementById('login-form');
-    if (loginForm) {
-      loginForm.addEventListener('submit', handleLogin);
-      const loginButton = loginForm.querySelector('button[type="submit"]');
-      if (loginButton) {
-        loginButton.addEventListener('click', (e) => {
-          e.preventDefault();
-          handleLogin(e);
-        });
-      }
-    }
+    bootstrap();
   });
 }
 
@@ -1155,16 +1030,12 @@ if (typeof module !== 'undefined' && module.exports) {
     pushToFirebase,
     schedulePush,
     setSyncStatus,
-    isLoggedIn,
-    showLogin,
-    showApp,
-    handleLogin,
     bootstrap,
     DEFAULT_CONFIG,
     SAMPLE_ROW,
     DEFAULT_DISTRICT_NAME,
-    AUTH_USERNAME,
-    AUTH_PASSWORD,
-    AUTH_STORAGE_KEY,
+    FIREBASE_DB_URL,
+    SYNC_POLL_INTERVAL_MS,
+    SYNC_PUSH_DEBOUNCE_MS,
   };
 }

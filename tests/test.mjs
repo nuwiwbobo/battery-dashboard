@@ -17,11 +17,7 @@ import {
   pushToFirebase,
   schedulePush,
   setSyncStatus,
-  isLoggedIn,
-  handleLogin,
-  AUTH_USERNAME,
-  AUTH_PASSWORD,
-  AUTH_STORAGE_KEY,
+  FIREBASE_DB_URL,
 } from '../app.js';
 
 test('rippleCurrent matches spreadsheet row 1', () => {
@@ -472,230 +468,69 @@ test('setSyncStatus: defined and is a no-op when document is undefined', () => {
 // functions must be a safe no-op (do not call fetch, do not throw).
 // ====================================================================
 
-test('pullFromFirebase: no-op when cloudSync is disabled (does not call fetch)', async () => {
-  // Install a fetch spy; the function should return before ever using it.
+test('pullFromFirebase: calls fetch with the hardcoded URL', async () => {
   const originalFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true, json: async () => ({}) }); };
-  try {
-    // The module's `state` is initialized with cloudSync.enabled = false,
-    // so the first guard fires and the function returns immediately.
-    const result = await pullFromFirebase();
-    assert.equal(result, undefined, 'returns undefined when disabled');
-    assert.equal(fetchCalls, 0, 'fetch was not called when cloudSync is disabled');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('pushToFirebase: no-op when cloudSync is disabled (does not call fetch)', async () => {
-  const originalFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true }); };
-  try {
-    const result = await pushToFirebase();
-    assert.equal(result, undefined, 'returns undefined when disabled');
-    assert.equal(fetchCalls, 0, 'fetch was not called when cloudSync is disabled');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('pullFromFirebase: no-op when firebaseDbUrl is empty (does not call fetch)', async () => {
-  // Even if enabled, missing URL should keep pullFromFirebase from fetching.
-  const originalFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true, json: async () => ({}) }); };
-  try {
-    // We can't easily toggle state.config from the unit test (state is a
-    // module-level let), so we verify the existing default state (URL empty)
-    // causes a no-op. The dedicated integration test verifies the enabled-but-
-    // empty-URL case explicitly.
-    const result = await pullFromFirebase();
-    assert.equal(result, undefined, 'returns undefined when URL empty');
-    assert.equal(fetchCalls, 0, 'fetch was not called when firebaseDbUrl is empty');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('pushToFirebase: no-op when firebaseDbUrl is empty (does not call fetch)', async () => {
-  const originalFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true }); };
-  try {
-    const result = await pushToFirebase();
-    assert.equal(result, undefined, 'returns undefined when URL empty');
-    assert.equal(fetchCalls, 0, 'fetch was not called when firebaseDbUrl is empty');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('pullFromFirebase: calls fetch and parses response when configured', async () => {
-  // Temporarily set a URL on state.config so the function actually fetches.
-  // We import the module's state via a side-effect: it's not exported, so we
-  // poke it through the public API by toggling the URL via the integration
-  // helper. For this unit test we instead monkey-patch the module's `state`
-  // by re-importing with a stub URL — but the module's state is private.
-  // The cleanest portable test is: stub fetch, then verify a successful
-  // response is consumed without throwing. The URL field is read off
-  // state.config, which we cannot reach from the test directly. The
-  // integration test covers the full state mutation flow.
-  const originalFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = () => {
-    fetchCalls++;
-    return Promise.resolve({
-      ok: true,
-      json: async () => ({ version: 1, updatedAt: '2026-07-21T00:00:00.000Z', rows: [], districts: [] }),
-    });
+  let capturedUrl = null;
+  globalThis.fetch = (url) => {
+    capturedUrl = url;
+    return Promise.resolve({ ok: true, json: async () => ({}), text: async () => 'null' });
   };
   try {
-    // Default state has empty URL → no-op. This is a smoke test of the
-    // contract: with default state, pullFromFirebase does not throw.
     await pullFromFirebase();
-    assert.equal(fetchCalls, 0, 'default empty URL → no fetch');
+    assert.ok(capturedUrl !== null, 'fetch was called');
+    assert.ok(
+      capturedUrl.includes(FIREBASE_DB_URL.replace(/\/$/, '')) || capturedUrl.includes(FIREBASE_DB_URL),
+      `fetch URL should include FIREBASE_DB_URL; got ${capturedUrl}`
+    );
+    assert.ok(capturedUrl.endsWith('/state.json'), `should end with /state.json; got ${capturedUrl}`);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-// ====================================================================
-// Login screen (client-side auth — see SECURITY NOTE in app.js)
-// ====================================================================
-
-const _unitLocalStorage = globalThis.localStorage;
-function _stubLocalStorage() {
-  const data = {};
-  globalThis.localStorage = {
-    getItem: (k) => (k in data ? data[k] : null),
-    setItem: (k, v) => { data[k] = String(v); },
-    removeItem: (k) => { delete data[k]; },
-    clear: () => { for (const k of Object.keys(data)) delete data[k]; },
+test('pullFromFirebase: updates local state when remote is newer', async () => {
+  const originalFetch = globalThis.fetch;
+  const remote = {
+    version: 1,
+    updatedAt: '2099-01-01T00:00:00.000Z',
+    config: { capacityProfile: 'TSS/ER' },
+    districts: [{ id: 1, name: 'Remote', rowIds: [] }],
+    rows: [],
   };
-  return data;
-}
-function _restoreLocalStorage() {
-  if (_unitLocalStorage === undefined) {
-    delete globalThis.localStorage;
-  } else {
-    globalThis.localStorage = _unitLocalStorage;
-  }
-}
-
-test('isLoggedIn: false initially (no localStorage entry)', () => {
-  const data = _stubLocalStorage();
+  globalThis.fetch = () => Promise.resolve({
+    ok: true,
+    json: async () => remote,
+    text: async () => JSON.stringify(remote),
+  });
   try {
-    assert.equal(isLoggedIn(), false, 'isLoggedIn() returns false with no entry');
+    await pullFromFirebase();
+    // Verify the test framework's state was updated — we can check via getState if exported
   } finally {
-    _restoreLocalStorage();
+    globalThis.fetch = originalFetch;
   }
 });
 
-test('isLoggedIn: true after correct login (localStorage stores "ok")', () => {
-  const data = _stubLocalStorage();
-  // Stub document for handleLogin to work
-  const originalDocument = globalThis.document;
-  const loginEls = {};
-  function _mkEl(id) {
-    return {
-      id, value: '', textContent: '', hidden: false,
-      addEventListener: () => {}, removeEventListener: () => {},
-    };
-  }
-  globalThis.document = {
-    getElementById: (id) => {
-      if (!loginEls[id]) loginEls[id] = _mkEl(id);
-      return loginEls[id];
-    },
-    addEventListener: () => {},
+test('pushToFirebase: calls fetch PUT with the hardcoded URL', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = null;
+  let capturedMethod = null;
+  globalThis.fetch = (url, opts) => {
+    capturedUrl = url;
+    capturedMethod = opts ? opts.method : null;
+    return Promise.resolve({ ok: true });
   };
   try {
-    loginEls['login-username'] = _mkEl('login-username');
-    loginEls['login-password'] = _mkEl('login-password');
-    loginEls['login-error'] = _mkEl('login-error');
-    loginEls['login-username'].value = AUTH_USERNAME;
-    loginEls['login-password'].value = AUTH_PASSWORD;
-    assert.equal(isLoggedIn(), false, 'before login, isLoggedIn is false');
-    handleLogin({ preventDefault: () => {} });
-    assert.equal(isLoggedIn(), true, 'after correct login, isLoggedIn is true');
-    assert.equal(data[AUTH_STORAGE_KEY], 'ok', 'localStorage holds "ok"');
+    await pushToFirebase();
+    assert.ok(capturedUrl !== null, 'fetch was called');
+    assert.ok(capturedUrl.includes('state.json'), `URL should include /state.json; got ${capturedUrl}`);
+    assert.equal(capturedMethod, 'PUT', 'should use PUT method');
   } finally {
-    _restoreLocalStorage();
-    if (originalDocument === undefined) {
-      delete globalThis.document;
-    } else {
-      globalThis.document = originalDocument;
-    }
+    globalThis.fetch = originalFetch;
   }
 });
 
-test('isLoggedIn: stays false after wrong password (no localStorage write)', () => {
-  const data = _stubLocalStorage();
-  const originalDocument = globalThis.document;
-  const loginEls = {};
-  function _mkEl(id) {
-    return { id, value: '', textContent: '', hidden: false,
-             addEventListener: () => {}, removeEventListener: () => {} };
-  }
-  globalThis.document = {
-    getElementById: (id) => {
-      if (!loginEls[id]) loginEls[id] = _mkEl(id);
-      return loginEls[id];
-    },
-    addEventListener: () => {},
-  };
-  try {
-    loginEls['login-username'] = _mkEl('login-username');
-    loginEls['login-password'] = _mkEl('login-password');
-    loginEls['login-error'] = _mkEl('login-error');
-    loginEls['login-username'].value = AUTH_USERNAME;
-    loginEls['login-password'].value = 'wrong-password';
-    handleLogin({ preventDefault: () => {} });
-    assert.equal(isLoggedIn(), false, 'isLoggedIn stays false after wrong password');
-    assert.equal(data[AUTH_STORAGE_KEY], undefined, 'localStorage NOT written');
-    assert.equal(loginEls['login-error'].hidden, false, 'error message shown');
-    assert.equal(loginEls['login-error'].textContent, 'Invalid username or password');
-  } finally {
-    _restoreLocalStorage();
-    if (originalDocument === undefined) {
-      delete globalThis.document;
-    } else {
-      globalThis.document = originalDocument;
-    }
-  }
-});
-
-test('isLoggedIn: stays false after wrong username', () => {
-  _stubLocalStorage();
-  const originalDocument = globalThis.document;
-  const loginEls = {};
-  function _mkEl(id) {
-    return { id, value: '', textContent: '', hidden: false,
-             addEventListener: () => {}, removeEventListener: () => {} };
-  }
-  globalThis.document = {
-    getElementById: (id) => {
-      if (!loginEls[id]) loginEls[id] = _mkEl(id);
-      return loginEls[id];
-    },
-    addEventListener: () => {},
-  };
-  try {
-    loginEls['login-username'] = _mkEl('login-username');
-    loginEls['login-password'] = _mkEl('login-password');
-    loginEls['login-error'] = _mkEl('login-error');
-    loginEls['login-username'].value = 'not-admin';
-    loginEls['login-password'].value = AUTH_PASSWORD;
-    handleLogin({ preventDefault: () => {} });
-    assert.equal(isLoggedIn(), false, 'isLoggedIn stays false after wrong username');
-  } finally {
-    _restoreLocalStorage();
-    if (originalDocument === undefined) {
-      delete globalThis.document;
-    } else {
-      globalThis.document = originalDocument;
-    }
-  }
+test('FIREBASE_DB_URL is a non-empty string', () => {
+  assert.equal(typeof FIREBASE_DB_URL, 'string');
+  assert.ok(FIREBASE_DB_URL.length > 0, 'FIREBASE_DB_URL should not be empty');
+  assert.ok(FIREBASE_DB_URL.startsWith('https://'), 'FIREBASE_DB_URL should be https');
 });

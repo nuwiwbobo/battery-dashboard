@@ -146,51 +146,6 @@ h2 {
   flex: none;
 }
 
-/* ====================================================================
-   Login overlay
-   ==================================================================== */
-
-#login-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-}
-#login-form {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  min-width: 320px;
-  color: var(--text);
-}
-#login-form h2 { margin: 0; }
-#login-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
-}
-#login-form input { padding: 0.5rem; }
-#login-form button {
-  background: var(--primary);
-  border: 1px solid var(--primary);
-  color: #fff;
-  padding: 0.6rem;
-  font-weight: 600;
-}
-#login-form button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
-#login-error {
-  color: var(--danger);
-  font-size: 0.85rem;
-  margin: 0;
-}
 
 input[type="number"],
 input[type="text"],
