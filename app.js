@@ -246,6 +246,7 @@ function exportCSV(districtId) {
 // directly (no Firebase SDK) — PUT to write, GET to read. No auth token
 // is required because access is gated by the URL itself. See README
 // for security notes and the rules the user should apply.
+let pushTimeout = null;
 let isDirty = false; // Tracks if local state has un-pushed changes
 let localBaselineState = null; // Snapshot of last synced state for comparison
 
