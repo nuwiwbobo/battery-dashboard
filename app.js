@@ -1,12 +1,10 @@
 'use strict';
 
-// Build: 2026-07-21-r11 (remove login, hardcode Firebase URL, auto-sync)
-//
-// SECURITY NOTE: This dashboard has NO authentication. It syncs directly
-// to a public Firebase Realtime Database (URL hardcoded below). Anyone
-// with the URL can read and modify the state. Suitable for a private
-// team or a single shared dashboard; for public deployment, add Firebase
-// Authentication and tighten the database rules.
+// Build: 2026-07-22-r12 (Manual Firebase Upload/Download & Local Storage)
+
+// ====================================================================
+// Calculations & Helper Functions
+// ====================================================================
 
 function normalizeIrOhms(ir, unit) {
   if (ir == null || isNaN(ir)) return null;
@@ -25,23 +23,6 @@ function dissipatedPower(vRipple, irOhms) {
   return (vRipple * vRipple) / irOhms;
 }
 
-// COMMENTED OUT: temperature prediction is now user-entered, not calculated.
-// Kept here for reference; can be re-enabled if calc-based temp is needed again.
-/*
-function predictedTemp(power, area, h) {
-  if (power == null || area == null || h == null) return null;
-  if (area <= 0 || h <= 0) return null;
-  if (isNaN(power) || isNaN(area) || isNaN(h)) return null;
-  return power / (area * h);
-}
-
-function surfaceArea(d1, d2, d3) {
-  if (d1 == null || d2 == null || d3 == null) return null;
-  if ([d1, d2, d3].some(v => v < 0 || isNaN(v))) return null;
-  return 2 * (d1 * d2 + d1 * d3 + d2 * d3);
-}
-*/
-
 function sohPercent(measuredCapacity, healthyCapacity) {
   if (measuredCapacity == null || healthyCapacity == null) return null;
   if (healthyCapacity <= 0) return null;
@@ -56,78 +37,23 @@ function overCurrentDecision(rippleCurrent, capacity) {
   return rippleCurrent > (capacity / 5);
 }
 
-// COMMENTED OUT: temperature check is no longer a decision column.
-// Temperature is now user-entered and displayed as a raw value, no thresholds applied.
-/*
-function tempCheckDecision(predictedTemp, amanMax, cekMax) {
-  if (predictedTemp == null) return null;
-  if (isNaN(predictedTemp)) return null;
-  if (predictedTemp < amanMax) return 'Aman';
-  if (predictedTemp < cekMax) return 'Cek';
-  return 'Ganti';
-}
-*/
-
-function voltageStatus(absDeviation, amanMax, cekMax) {
-  if (absDeviation == null) return null;
-  if (isNaN(absDeviation)) return null;
-  if (absDeviation < amanMax) return 'Aman';
-  if (absDeviation < cekMax) return 'Cek';
-  return 'Ganti';
-}
-
-// Combined battery status: SOH AND worst-of-(V, IR)
-// 3 levels: Aman | Cek | Tidak Layak
-// Priority: V and IR are each classified independently into ok/warning/bad.
-// The "worse" zone wins. Then SOH gate is applied:
-//   - SOH > 80% AND combined zone is ok  → Aman
-//   - combined zone is warning            → Cek
-//   - combined zone is bad                → Tidak Layak
-//   - SOH ≤ 80% (any zone)                → Cek
 function batteryStatus(cellVoltage, ir, soh, batasAtas, batasBawah, irBaseline) {
-  // 1. Input Validation & Null Checks
   if (cellVoltage == null || ir == null || soh == null) return null;
   if (isNaN(cellVoltage) || isNaN(ir) || isNaN(soh)) return null;
   if (batasAtas == null || batasBawah == null || irBaseline == null) return null;
   if (batasAtas <= batasBawah) return null;
   if (irBaseline <= 0) return null;
 
-  // 2. Logic Implementation based on specified conditions
-  
-  // --- Case 1: SOH > 80% ---
   if (soh > 80) {
-    if (ir < irBaseline * 1.2 && cellVoltage > batasAtas) {
-      return 'Aman';
-    }
-    if (ir > irBaseline * 1.2 && cellVoltage < batasAtas) {
-      return 'Cek'; // WARNING -> 'Cek'
-    }
-  } 
-  
-  // --- Case 2: SOH <= 80% (soh < 80% branch) ---
-  else {
-    // Condition 1: BAD / Tidak Layak
-    // (ir > irBaseline * 1.5 OR cellVoltage < batasBawah)
-    if (ir > irBaseline * 1.5 || cellVoltage < batasBawah) {
-      return 'Tidak Layak'; // BAD -> 'Tidak Layak'
-    }
-
-    // Condition 2: WARNING / Cek
-    // (ir Baseline * 1.2 < ir < irBaseline * 1.5 OR batasBawah < cellVoltage < batasAtas)
-    const isIrInWarningRange = (ir > irBaseline * 1.2) && (ir < irBaseline * 1.5);
-    const isVoltageInWarningRange = (cellVoltage > batasBawah) && (cellVoltage < batasAtas);
-
-    if (isIrInWarningRange || isVoltageInWarningRange) {
-      return 'Cek'; // WARNING -> 'Cek'
-    }
-
-    // Condition 3: AMAN
-    if (ir < irBaseline * 1.2 && cellVoltage > batasAtas) {
-      return 'Aman';
-    }
+    if (ir < irBaseline * 1.2 && cellVoltage > batasAtas) return 'Aman';
+    if (ir > irBaseline * 1.2 && cellVoltage < batasAtas) return 'Cek';
+  } else {
+    if (ir > irBaseline * 1.5 || cellVoltage < batasBawah) return 'Tidak Layak';
+    const isIrWarning = (ir > irBaseline * 1.2) && (ir < irBaseline * 1.5);
+    const isVoltageWarning = (cellVoltage > batasBawah) && (cellVoltage < batasAtas);
+    if (isIrWarning || isVoltageWarning) return 'Cek';
+    if (ir < irBaseline * 1.2 && cellVoltage > batasAtas) return 'Aman';
   }
-
-  // Fallback status for border/uncovered condition boundaries (e.g., cellVoltage == batasAtas)
   return 'Cek';
 }
 
@@ -141,9 +67,6 @@ function mean(arr) {
 // CSV import/export
 // ====================================================================
 
-// Map CSV column names (lowercased, normalized) to dashboard fields.
-// Uses substring matching: "cell_voltage" → contains "voltage" → cellVoltage
-// Check order: most-specific substring first to avoid false positives.
 const CSV_COLUMN_MAP = {
   rippleVoltage: ['ripple', 'vripple', 'v_ripple', 'vrms'],
   measuredCapacity: ['cap', 'capacity', 'ah', 'measured'],
@@ -161,25 +84,14 @@ function parseCSV(text) {
     .filter(line => line.length > 0);
   if (lines.length < 1) return [];
 
-  // First non-empty line: could be header OR a data row.
-  // We try to detect: if the first line contains a known keyword
-  // treat it as a header. Otherwise treat all lines as data with default ordering.
   const firstCells = lines[0].split(',').map(c => c.trim().replace(/^"|"$/g, '').toLowerCase());
   const firstLineHasKnownHeader = firstCells.some(cell =>
     Object.values(CSV_COLUMN_MAP).some(aliases => aliases.some(a => cell.includes(a)))
   );
 
   let headerColumns = null;
-  let dataLines;
-  if (firstLineHasKnownHeader) {
-    headerColumns = firstCells;
-    dataLines = lines.slice(1);
-  } else {
-    // No recognizable header — assume default column order
-    dataLines = lines;
-  }
+  let dataLines = firstLineHasKnownHeader ? (headerColumns = firstCells, lines.slice(1)) : lines;
 
-  // Build column index → dashboard field map
   const fieldForIndex = (cellIdx) => {
     if (!headerColumns) return null;
     const col = headerColumns[cellIdx];
@@ -193,7 +105,6 @@ function parseCSV(text) {
   return dataLines.map(line => {
     const cells = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
     if (!headerColumns) {
-      // Default positional order: battery_no, cell_voltage, temperature, ir, capacity, ripple_voltage
       return {
         battery_no: parseNumberOrNull(cells[0]),
         cellVoltage: parseNumberOrNull(cells[1]),
@@ -203,7 +114,6 @@ function parseCSV(text) {
         rippleVoltage: parseNumberOrNull(cells[5]),
       };
     }
-    // Header-driven: pick out known fields by column name
     const row = {};
     for (let i = 0; i < cells.length; i++) {
       const field = fieldForIndex(i);
@@ -239,7 +149,7 @@ function rowsToCSV(rows) {
 }
 
 function downloadCSV(filename, content) {
-  if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof Blob === 'undefined') return;
+  if (typeof document === 'undefined') return;
   const blob = new Blob([content], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -259,24 +169,16 @@ function addCSVToDistrict(districtId, parsedRows) {
   let added = 0;
 
   parsedRows.forEach(rowData => {
-    // rowData is now an object {cellVoltage, temperature, ir, ...}
-    // Accept both array (legacy) and object (new) format
-    let fields;
-    if (Array.isArray(rowData)) {
-      // Legacy array format: [battery_no, cell_voltage, temperature, ir, capacity, ripple_voltage]
-      // Also handles 5-column CSVs (like ADM.csv)
-      fields = {
-        cellVoltage: rowData[1],
-        temperature: rowData[2],
-        ir: rowData[3],
-        measuredCapacity: rowData[4],
-        rippleVoltage: rowData.length >= 6 ? rowData[5] : null,
-      };
-    } else if (typeof rowData === 'object' && rowData !== null) {
-      fields = rowData;
-    } else {
-      return;
-    }
+    let fields = Array.isArray(rowData) ? {
+      cellVoltage: rowData[1],
+      temperature: rowData[2],
+      ir: rowData[3],
+      measuredCapacity: rowData[4],
+      rippleVoltage: rowData.length >= 6 ? rowData[5] : null,
+    } : (typeof rowData === 'object' && rowData !== null ? rowData : null);
+
+    if (!fields) return;
+
     const newRow = {
       id: nextRowId(),
       cellVoltage: parseNumberOrNull(fields.cellVoltage),
@@ -296,13 +198,6 @@ function addCSVToDistrict(districtId, parsedRows) {
   if (added > 0) {
     saveState();
     if (typeof renderDistricts === 'function') renderDistricts();
-    
-    // Trigger synchronization if you are syncing with Firebase
-    if (typeof markStateModified === 'function') {
-      markStateModified();
-    } else if (typeof schedulePush === 'function') {
-      schedulePush();
-    }
   }
   return added;
 }
@@ -314,7 +209,7 @@ function importCSV(districtId, file) {
     const text = e.target.result;
     const parsed = parseCSV(text);
     const count = addCSVToDistrict(districtId, parsed);
-    console.log(`Successfully imported ${count} cells.`);
+    showBanner(`Successfully imported ${count} cells.`);
   };
   reader.readAsText(file);
 }
@@ -326,80 +221,112 @@ function exportCSV(districtId) {
   const csv = rowsToCSV(rows);
   const date = new Date().toISOString().slice(0, 10);
   const name = sanitizeFilename(district.name);
-  const filename = `district_${name}_${date}.csv`;
-  downloadCSV(filename, csv);
+  downloadCSV(`district_${name}_${date}.csv`, csv);
 }
+
 // ====================================================================
-// Firebase Sync Config & Controls
+// Firebase Manual Sync Logic
 // ====================================================================
+
 const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-let isDirty = false;
-
-/**
- * Call this whenever state changes locally to flag uncommitted changes.
- */
-function markStateModified() {
-  isDirty = true;
-}
-
-/**
- * Manual Download (Pull from Firebase)
- * Notifies the user if new data was updated, if data is already up-to-date, or if errors occur.
- */
 async function downloadFromFirebase() {
   if (typeof fetch === 'undefined') return;
   setSyncStatus('Downloading...');
 
   try {
     const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
-    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
     const remote = await res.json();
     if (!remote) {
-      showBanner('Database is empty.');
+      showBanner('Cloud database is empty.');
       setSyncStatus('Idle');
       return;
     }
 
-    // Check if remote data is newer than local lastSyncedAt
-    const isNewData = !state.lastSyncedAt || (remote.updatedAt && remote.updatedAt > state.lastSyncedAt);
+    const remoteDistricts = remote.districts || [];
+    const remoteRows = remote.rows || [];
+    const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
 
-    if (isNewData) {
-      const remoteDistricts = remote.districts || [];
-      const remoteRows = remote.rows || [];
-      const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
+    state = {
+      config: remoteConfig,
+      districts: remoteDistricts,
+      rows: remoteRows,
+      lastSyncedAt: remote.updatedAt || new Date().toISOString(),
+      banner: null,
+    };
 
-      state = {
-        config: remoteConfig,
-        districts: remoteDistricts,
-        rows: remoteRows,
-        lastSyncedAt: remote.updatedAt || new Date().toISOString(),
-        banner: null,
-      };
+    saveState(false); // Save locally without setting modified status
+    render();
 
-      isDirty = false;
-      saveState(false); // Save locally without marking modified
-      if (typeof render === 'function') render();
-
-      setSyncStatus('Downloaded');
-      showBanner('🔔 New data detected and downloaded successfully!');
-    } else {
-      setSyncStatus('Up-to-date');
-      showBanner('ℹ️ Local data is already up to date with cloud.');
-    }
+    setSyncStatus('Downloaded');
+    showBanner('📥 Successfully downloaded latest data from Firebase.');
   } catch (e) {
     console.error('Download failed:', e);
     setSyncStatus('Error');
-    showBanner('❌ Failed to download data from cloud.');
+    showBanner(`❌ Download failed: ${e.message}`);
   }
 }
+
+async function uploadToFirebase() {
+  if (typeof fetch === 'undefined') return;
+  setSyncStatus('Uploading...');
+
+  try {
+    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
+    const updatedAt = new Date().toISOString();
+
+    const payload = {
+      config: state.config,
+      districts: state.districts,
+      rows: state.rows,
+      updatedAt: updatedAt,
+      version: 1
+    };
+
+    const res = await fetch(`${baseUrl}/state.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+    state.lastSyncedAt = updatedAt;
+    saveState(false);
+
+    setSyncStatus('Uploaded');
+    showBanner('📤 Successfully uploaded data to Firebase.');
+  } catch (e) {
+    console.error('Upload failed:', e);
+    setSyncStatus('Error');
+    showBanner(`❌ Upload failed: ${e.message}`);
+  }
+}
+
+function setSyncStatus(text) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('sync-status');
+  if (el) el.textContent = text;
+}
+
+function showBanner(message) {
+  const el = document.getElementById('banner');
+  if (!el) {
+    alert(message);
+    return;
+  }
+  el.textContent = message;
+  el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 5000);
+}
+
 // ====================================================================
-// State management (browser-only)
+// Local State Management
 // ====================================================================
 
 const STORAGE_KEY = 'battery-dashboard-state-v1';
-
 const DEFAULT_DISTRICT_NAME = 'Default';
 
 const DEFAULT_CONFIG = {
@@ -409,8 +336,8 @@ const DEFAULT_CONFIG = {
   healthyCapacity: 300,
   batasAtas: 2.5,
   batasBawah: 2.0,
-  irBaselineRss: 0.00075,      // 0.75 mΩ
-  irBaselineTssEr: 0.00085,    // 0.85 mΩ
+  irBaselineRss: 0.00075,
+  irBaselineTssEr: 0.00085,
 };
 
 const SAMPLE_ROW = {
@@ -433,15 +360,11 @@ let state = {
 };
 
 function nextRowId() {
-  return state.rows.length === 0
-    ? 1
-    : Math.max(...state.rows.map(r => r.id)) + 1;
+  return state.rows.length === 0 ? 1 : Math.max(...state.rows.map(r => r.id)) + 1;
 }
 
 function nextDistrictId() {
-  return state.districts.length === 0
-    ? 1
-    : Math.max(...state.districts.map(d => d.id)) + 1;
+  return state.districts.length === 0 ? 1 : Math.max(...state.districts.map(d => d.id)) + 1;
 }
 
 function getRowsForDistrict(district) {
@@ -466,8 +389,9 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') throw new Error('invalid shape');
-    if (!parsed.config || !Array.isArray(parsed.rows)) throw new Error('missing fields');
+    if (!parsed || typeof parsed !== 'object') return;
+    if (!parsed.config || !Array.isArray(parsed.rows)) return;
+
     const rows = parsed.rows.map((r, i) => ({
       id: i + 1,
       cellVoltage: r.cellVoltage ?? null,
@@ -478,45 +402,23 @@ function loadState() {
       temperature: (typeof r.temperature === 'number' && !isNaN(r.temperature)) ? r.temperature : null,
     }));
 
-    let districts = [];
-    if (Array.isArray(parsed.districts) && parsed.districts.length > 0) {
-      districts = parsed.districts.map((d, i) => ({
-        id: (typeof d.id === 'number' && !isNaN(d.id)) ? d.id : i + 1,
-        name: (typeof d.name === 'string' && d.name.length > 0) ? d.name : `District ${i + 1}`,
-        rowIds: Array.isArray(d.rowIds)
-          ? d.rowIds.filter(id => rows.some(r => r.id === id))
-          : [],
-      }));
-    }
+    let districts = Array.isArray(parsed.districts) ? parsed.districts.map((d, i) => ({
+      id: (typeof d.id === 'number' && !isNaN(d.id)) ? d.id : i + 1,
+      name: (typeof d.name === 'string' && d.name.length > 0) ? d.name : `District ${i + 1}`,
+      rowIds: Array.isArray(d.rowIds) ? d.rowIds.filter(id => rows.some(r => r.id === id)) : [],
+    })) : [];
 
     if (districts.length === 0) {
-      districts.push({
-        id: 1,
-        name: DEFAULT_DISTRICT_NAME,
-        rowIds: rows.map(r => r.id),
-      });
-    } else {
-      const assigned = new Set();
-      districts.forEach(d => d.rowIds.forEach(id => assigned.add(id)));
-      const unassigned = rows.filter(r => !assigned.has(r.id));
-      if (unassigned.length > 0) {
-        districts[0].rowIds.push(...unassigned.map(r => r.id));
-      }
+      districts.push({ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: rows.map(r => r.id) });
     }
 
     state = {
       config: {
         ...DEFAULT_CONFIG,
         capacityProfile: (parsed.config.capacityProfile === 'TSS/ER') ? 'TSS/ER' : 'RSS',
-        healthyCapacity: (typeof parsed.config.healthyCapacity === 'number' && !isNaN(parsed.config.healthyCapacity) && parsed.config.healthyCapacity > 0)
-          ? parsed.config.healthyCapacity
-          : DEFAULT_CONFIG.healthyCapacity,
-        batasAtas: (typeof parsed.config.batasAtas === 'number' && !isNaN(parsed.config.batasAtas))
-          ? parsed.config.batasAtas
-          : DEFAULT_CONFIG.batasAtas,
-        batasBawah: (typeof parsed.config.batasBawah === 'number' && !isNaN(parsed.config.batasBawah))
-          ? parsed.config.batasBawah
-          : DEFAULT_CONFIG.batasBawah,
+        healthyCapacity: parsed.config.healthyCapacity || DEFAULT_CONFIG.healthyCapacity,
+        batasAtas: parsed.config.batasAtas || DEFAULT_CONFIG.batasAtas,
+        batasBawah: parsed.config.batasBawah || DEFAULT_CONFIG.batasBawah,
       },
       rows,
       districts,
@@ -524,20 +426,11 @@ function loadState() {
       banner: null,
     };
   } catch (err) {
-    console.error('Failed to load state:', err);
-    showBanner('Saved data was corrupt, started fresh');
-    state = {
-      config: { ...DEFAULT_CONFIG },
-      rows: [{ ...SAMPLE_ROW }],
-      districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
-      lastSyncedAt: null,
-      banner: null,
-    };
+    console.error('Failed to load local state:', err);
   }
 }
 
 function saveState() {
-  markStateModified();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       config: state.config,
@@ -546,65 +439,25 @@ function saveState() {
       lastSyncedAt: state.lastSyncedAt,
     }));
   } catch (err) {
-    if (err.name === 'QuotaExceededError') {
-      showBanner("Couldn't auto-save (storage full); export your data before closing");
-    } else {
-      console.error('Save failed:', err);
-    }
+    console.error('Save failed:', err);
   }
-  schedulePush();
-}
-
-function showBanner(message) {
-  const el = document.getElementById('banner');
-  if (!el) return;
-  el.textContent = message;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
-}
-
-function getState() { return state; }
-function setState(newState) {
-  state = newState;
-  saveState();
 }
 
 // ====================================================================
-// Derived calculations (per row)
+// Rendering & Calculation Bridge
 // ====================================================================
 
 function computeRowDerived(row, config) {
   const irOhms = normalizeIrOhms(row.ir, row.irUnit);
   const iRipple = rippleCurrent(row.rippleVoltage, irOhms);
   const power = dissipatedPower(row.rippleVoltage, irOhms);
-
-  const capacity = config.capacityProfile === 'RSS'
-    ? config.rssCapacity
-    : config.tssErCapacity;
+  const capacity = config.capacityProfile === 'RSS' ? config.rssCapacity : config.tssErCapacity;
   const overCurrent = overCurrentDecision(iRipple, capacity);
-
   const soh = sohPercent(row.measuredCapacity, config.healthyCapacity);
-  const irBaseline = config.capacityProfile === 'RSS'
-    ? config.irBaselineRss
-    : config.irBaselineTssEr;
-  const status = batteryStatus(
-    row.cellVoltage,
-    irOhms,
-    soh,
-    config.batasAtas,
-    config.batasBawah,
-    irBaseline
-  );
+  const irBaseline = config.capacityProfile === 'RSS' ? config.irBaselineRss : config.irBaselineTssEr;
+  const status = batteryStatus(row.cellVoltage, irOhms, soh, config.batasAtas, config.batasBawah, irBaseline);
 
-  return {
-    irOhms,
-    iRipple,
-    power,
-    overCurrent,
-    soh,
-    temperature: row.temperature,
-    status,
-  };
+  return { irOhms, iRipple, power, overCurrent, soh, temperature: row.temperature, status };
 }
 
 function formatNumber(n, digits = 4) {
@@ -612,10 +465,6 @@ function formatNumber(n, digits = 4) {
   if (Math.abs(n) >= 1000 || Math.abs(n) < 0.001) return n.toExponential(2);
   return Number(n).toFixed(digits);
 }
-
-// ====================================================================
-// Render
-// ====================================================================
 
 function render() {
   renderConfig();
@@ -638,18 +487,14 @@ function renderConfig() {
 function updateThresholdDisplay() {
   const el = document.getElementById('oc-threshold');
   if (!el) return;
-  const capacity = state.config.capacityProfile === 'RSS'
-    ? state.config.rssCapacity
-    : state.config.tssErCapacity;
+  const capacity = state.config.capacityProfile === 'RSS' ? state.config.rssCapacity : state.config.tssErCapacity;
   el.textContent = `${capacity / 5} A`;
 }
 
 function updateBaselineDisplay() {
   const el = document.getElementById('ir-baseline');
   if (!el) return;
-  const baseline = state.config.capacityProfile === 'RSS'
-    ? state.config.irBaselineRss
-    : state.config.irBaselineTssEr;
+  const baseline = state.config.capacityProfile === 'RSS' ? state.config.irBaselineRss : state.config.irBaselineTssEr;
   el.textContent = `${(baseline * 1000).toFixed(2)} mΩ`;
 }
 
@@ -799,16 +644,12 @@ function updateDistrictSummaryInPlace(districtId) {
 }
 
 // ====================================================================
-// District CRUD (browser-only; mutates state, persists, re-renders)
+// District Operations & Event Handlers
 // ====================================================================
 
 function addDistrict() {
   const newId = nextDistrictId();
-  state.districts.push({
-    id: newId,
-    name: `District ${newId}`,
-    rowIds: [],
-  });
+  state.districts.push({ id: newId, name: `District ${newId}`, rowIds: [] });
   saveState();
   renderDistricts();
 }
@@ -816,15 +657,7 @@ function addDistrict() {
 function addRowToDistrict(districtId) {
   const district = state.districts.find(d => d.id === districtId);
   if (!district) return;
-  const newRow = {
-    id: nextRowId(),
-    cellVoltage: null,
-    ir: null,
-    irUnit: 'mohm',
-    rippleVoltage: null,
-    measuredCapacity: null,
-    temperature: null,
-  };
+  const newRow = { id: nextRowId(), cellVoltage: null, ir: null, irUnit: 'mohm', rippleVoltage: null, measuredCapacity: null, temperature: null };
   state.rows.push(newRow);
   district.rowIds.push(newRow.id);
   saveState();
@@ -834,13 +667,8 @@ function addRowToDistrict(districtId) {
 function deleteSelectedInDistrict(districtId) {
   const district = state.districts.find(d => d.id === districtId);
   if (!district) return;
-  const selected = Array.from(
-    document.querySelectorAll(`.district[data-district-id="${districtId}"] .row-select:checked`)
-  ).map(cb => parseInt(cb.dataset.rowId, 10));
-  if (selected.length === 0) {
-    showBanner('No rows selected');
-    return;
-  }
+  const selected = Array.from(document.querySelectorAll(`.district[data-district-id="${districtId}"] .row-select:checked`)).map(cb => parseInt(cb.dataset.rowId, 10));
+  if (selected.length === 0) return showBanner('No rows selected');
   if (!confirm(`Delete ${selected.length} row(s)?`)) return;
   state.rows = state.rows.filter(r => !selected.includes(r.id));
   district.rowIds = district.rowIds.filter(id => !selected.includes(id));
@@ -863,18 +691,20 @@ function renameDistrict(districtId, newName) {
   const district = state.districts.find(d => d.id === districtId);
   if (!district) return;
   const trimmed = (newName || '').trim();
-  if (trimmed.length === 0) return;
-  if (trimmed === district.name) return;
+  if (trimmed.length === 0 || trimmed === district.name) return;
   district.name = trimmed;
   saveState();
 }
 
-// ====================================================================
-// Event wiring (browser-only)
-// ====================================================================
-
 function wireEvents() {
-  // Cell table inputs (delegated on districts container)
+  // Sync Buttons
+  const downloadBtn = document.getElementById('download-db-btn');
+  if (downloadBtn) downloadBtn.addEventListener('click', downloadFromFirebase);
+
+  const uploadBtn = document.getElementById('upload-db-btn');
+  if (uploadBtn) uploadBtn.addEventListener('click', uploadToFirebase);
+
+  // Table inputs delegation
   const container = document.getElementById('districts-container');
   if (container) {
     container.addEventListener('input', (e) => {
@@ -898,25 +728,8 @@ function wireEvents() {
             target.classList.add('invalid');
             return;
           }
-          if (field === 'cellVoltage' && (num <= 0 || num > 5)) {
-            target.classList.add('invalid');
-            row[field] = num;
-          } else if (field === 'ir' && num <= 0) {
-            target.classList.add('invalid');
-            row[field] = num;
-          } else if (field === 'rippleVoltage' && num < 0) {
-            target.classList.add('invalid');
-            row[field] = num;
-          } else if (field === 'measuredCapacity' && num < 0) {
-            target.classList.add('invalid');
-            row[field] = num;
-          } else if (field === 'temperature') {
-            target.classList.remove('invalid');
-            row[field] = num;
-          } else {
-            target.classList.remove('invalid');
-            row[field] = num;
-          }
+          target.classList.remove('invalid');
+          row[field] = num;
         }
       }
       saveState();
@@ -925,189 +738,74 @@ function wireEvents() {
       if (district) updateDistrictSummaryInPlace(district.id);
     });
 
-    // District actions (delegated click)
     container.addEventListener('click', (e) => {
       const target = e.target;
-      if (!(target instanceof Object) || !target.classList) return;
+      if (!target.classList) return;
 
-      if (target.classList.contains('add-row-btn')) {
-        const districtId = parseInt(target.dataset.districtId, 10);
-        addRowToDistrict(districtId);
-      } else if (target.classList.contains('delete-selected-btn')) {
-        const districtId = parseInt(target.dataset.districtId, 10);
-        deleteSelectedInDistrict(districtId);
-      } else if (target.classList.contains('district-delete-btn')) {
-        const districtId = parseInt(target.dataset.districtId, 10);
-        deleteDistrict(districtId);
-      } else if (target.classList.contains('import-csv-btn')) {
-        const districtId = parseInt(target.dataset.districtId, 10);
-        const input = container.querySelector(`.import-csv-input[data-district-id="${districtId}"]`);
+      if (target.classList.contains('add-row-btn')) addRowToDistrict(parseInt(target.dataset.districtId, 10));
+      else if (target.classList.contains('delete-selected-btn')) deleteSelectedInDistrict(parseInt(target.dataset.districtId, 10));
+      else if (target.classList.contains('district-delete-btn')) deleteDistrict(parseInt(target.dataset.districtId, 10));
+      else if (target.classList.contains('import-csv-btn')) {
+        const input = container.querySelector(`.import-csv-input[data-district-id="${target.dataset.districtId}"]`);
         if (input) input.click();
-      } else if (target.classList.contains('export-csv-btn')) {
-        const districtId = parseInt(target.dataset.districtId, 10);
-        exportCSV(districtId);
-      }
+      } else if (target.classList.contains('export-csv-btn')) exportCSV(parseInt(target.dataset.districtId, 10));
     });
 
-    // District name editing (delegated blur on contenteditable h3)
     container.addEventListener('blur', (e) => {
       const target = e.target;
-      if (!target.classList || !target.classList.contains('district-name')) return;
-      const districtId = parseInt(target.dataset.districtId, 10);
-      renameDistrict(districtId, target.textContent);
+      if (target.classList && target.classList.contains('district-name')) {
+        renameDistrict(parseInt(target.dataset.districtId, 10), target.textContent);
+      }
     }, true);
 
-    // CSV import (delegated change on hidden file inputs)
     container.addEventListener('change', (e) => {
       const target = e.target;
-      if (!target.classList || !target.classList.contains('import-csv-input')) return;
-      const districtId = parseInt(target.dataset.districtId, 10);
-      const file = target.files && target.files[0];
-      if (file) importCSV(districtId, file);
-      target.value = '';
+      if (target.classList && target.classList.contains('import-csv-input')) {
+        const file = target.files && target.files[0];
+        if (file) importCSV(parseInt(target.dataset.districtId, 10), file);
+        target.value = '';
+      }
     });
   }
 
-  // Add district (singleton)
   const addDistrictBtn = document.getElementById('add-district-btn');
-  if (addDistrictBtn) {
-    addDistrictBtn.addEventListener('click', addDistrict);
+  if (addDistrictBtn) addDistrictBtn.addEventListener('click', addDistrict);
+
+  const resetBtn = document.getElementById('reset-btn');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      if (!confirm('Clear all local data and start fresh?')) return;
+      localStorage.removeItem(STORAGE_KEY);
+      state = {
+        config: { ...DEFAULT_CONFIG },
+        rows: [{ ...SAMPLE_ROW }],
+        districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
+        banner: null,
+      };
+      render();
+    });
   }
 
-  // Reset all
-  document.getElementById('reset-btn').addEventListener('click', () => {
-    if (!confirm('Clear all data and start fresh?')) return;
-    localStorage.removeItem(STORAGE_KEY);
-    state = {
-      config: { ...DEFAULT_CONFIG },
-      rows: [{ ...SAMPLE_ROW }],
-      districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
-      banner: null,
-    };
-    render();
-  });
-
-  // Config: capacity profile select
   const profileEl = document.getElementById('config-profile');
   if (profileEl) {
-    const onProfileChange = () => {
+    profileEl.addEventListener('change', () => {
       state.config.capacityProfile = profileEl.value;
       saveState();
       updateThresholdDisplay();
       updateBaselineDisplay();
       state.rows.forEach(r => updateRowInPlace(r.id));
       state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
-    };
-    profileEl.addEventListener('change', onProfileChange);
-    profileEl.addEventListener('input', onProfileChange);
-  }
-
-  // Config: healthy capacity input
-  const healthyEl = document.getElementById('config-healthy');
-  if (healthyEl) {
-    healthyEl.addEventListener('input', () => {
-      const raw = healthyEl.value.replace(',', '.');
-      const val = parseFloat(raw);
-      if (isNaN(val) || val <= 0) {
-        healthyEl.classList.add('invalid');
-        return;
-      }
-      healthyEl.classList.remove('invalid');
-      state.config.healthyCapacity = val;
-      saveState();
-      state.rows.forEach(r => updateRowInPlace(r.id));
-      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     });
   }
-
-  // Config: batas atas (V)
-  const atasEl = document.getElementById('config-batas-atas');
-  if (atasEl) {
-    atasEl.addEventListener('input', () => {
-      const raw = atasEl.value.replace(',', '.');
-      const val = parseFloat(raw);
-      if (isNaN(val) || val <= 0) {
-        atasEl.classList.add('invalid');
-        return;
-      }
-      atasEl.classList.remove('invalid');
-      state.config.batasAtas = val;
-      saveState();
-      state.rows.forEach(r => updateRowInPlace(r.id));
-      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
-    });
-  }
-
-  // Config: batas bawah (V)
-  const bawahEl = document.getElementById('config-batas-bawah');
-  if (bawahEl) {
-    bawahEl.addEventListener('input', () => {
-      const raw = bawahEl.value.replace(',', '.');
-      const val = parseFloat(raw);
-      if (isNaN(val) || val <= 0) {
-        bawahEl.classList.add('invalid');
-        return;
-      }
-      bawahEl.classList.remove('invalid');
-      state.config.batasBawah = val;
-      saveState();
-      state.rows.forEach(r => updateRowInPlace(r.id));
-      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
-    });
-  }
-
-  // No more cloud sync input handlers — sync is hardcoded and automatic
 }
-
-// ====================================================================
-// Bootstrap (browser-only)
-// ====================================================================
 
 function bootstrap() {
   loadState();
   render();
   wireEvents();
-  // Always sync with Firebase — no enable flag, no URL input required
-  pullFromFirebase();
-  if (typeof setInterval !== 'undefined') {
-    setInterval(pullFromFirebase, SYNC_POLL_INTERVAL_MS);
-  }
+  setSyncStatus('Idle');
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-  document.addEventListener('DOMContentLoaded', () => {
-    bootstrap();
-  });
-}
-
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    normalizeIrOhms,
-    rippleCurrent,
-    dissipatedPower,
-    sohPercent,
-    overCurrentDecision,
-    batteryStatus,
-    mean,
-    tempClass,
-    renderRowHTML,
-    parseCSV,
-    rowsToCSV,
-    parseNumberOrNull,
-    addCSVToDistrict,
-    importCSV,
-    exportCSV,
-    pullFromFirebase,
-    pushToFirebase,
-    schedulePush,
-    markStateModified,
-    setSyncStatus,
-    bootstrap,
-    DEFAULT_CONFIG,
-    SAMPLE_ROW,
-    DEFAULT_DISTRICT_NAME,
-    FIREBASE_DB_URL,
-    SYNC_POLL_INTERVAL_MS,
-    SYNC_PUSH_DEBOUNCE_MS,
-  };
+  document.addEventListener('DOMContentLoaded', bootstrap);
 }
