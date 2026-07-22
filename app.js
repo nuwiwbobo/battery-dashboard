@@ -371,198 +371,26 @@ async function pullFromFirebase() {
       return;
     }
 
-    // MERGE STRATEGY: If we have a baseline to compare against, merge local and remote
-    if (localBaselineState && localBaselineState.rows && localBaselineState.districts) {
-      console.log('Merging local changes with remote state...');
-      
-      // Merge rows by ID (preserve local edits, add new remote rows)
-      const mergedRows = mergeRowsBy(state.rows, remote.rows, localBaselineState.rows);
-      
-      // Merge districts by ID (preserve local structure, add new remote districts)
-      const mergedDistricts = mergeDistrictsBy(state.districts, remote.districts, localBaselineState.districts);
-      
-      // Merge config (prefer remote, but keep local changes)
-      const mergedConfig = mergeConfig(state.config, remote.config, localBaselineState.config);
-      
-      state = {
-        config: mergedConfig,
-        districts: mergedDistricts,
-        rows: mergedRows,
-        lastSyncedAt: remote.updatedAt,
-        banner: null,
-      };
-      
-      // Update baseline to reflect merged state
-      localBaselineState = JSON.parse(JSON.stringify(state));
-      // Keep isDirty=true so we push the merged result
-    } else {
-      // No local changes, safe to replace entirely
-      state = {
-        config: { ...DEFAULT_CONFIG, ...(remote.config || {}) },
-        districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
-        rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
-        lastSyncedAt: remote.updatedAt,
-        banner: null,
-      };
-      
-      localBaselineState = JSON.parse(JSON.stringify(state));
-      isDirty = false;
-    }
+    // Merge or accept remote state
+    state = {
+      config: { ...DEFAULT_CONFIG, ...(remote.config || {}) },
+      districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
+      rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
+      lastSyncedAt: remote.updatedAt,
+      banner: null,
+    };
 
-    saveState(true); // Skip marking as dirty - this is a pull, not a local change
+    // Deep clone baseline to track future local changes
+    localBaselineState = JSON.parse(JSON.stringify(state));
+    isDirty = false;
+
+    saveState();
     render();
     setSyncStatus('Synced');
   } catch (e) {
     console.error('Pull failed:', e);
     setSyncStatus('Sync error');
   }
-}
-
-/**
- * Merge rows by ID. Strategy:
- * - If row exists in local but not baseline → locally added, keep it
- * - If row exists in remote but not baseline → remotely added, add it
- * - If row exists in both local and remote → check which changed more recently
- * - If row deleted locally (in baseline but not local) → delete it
- * - If row deleted remotely (in baseline but not remote) → delete it
- */
-function mergeRowsBy(localRows, remoteRows, baselineRows) {
-  const localMap = new Map(localRows.map(r => [r.id, r]));
-  const remoteMap = new Map(remoteRows.map(r => [r.id, r]));
-  const baselineMap = new Map(baselineRows.map(r => [r.id, r]));
-  
-  const merged = [];
-  const seenIds = new Set();
-  
-  // Process local rows first (preserve local edits)
-  for (const localRow of localRows) {
-    const baselineRow = baselineMap.get(localRow.id);
-    const remoteRow = remoteMap.get(localRow.id);
-    
-    if (!baselineRow) {
-      // Locally added row, keep it
-      merged.push(localRow);
-    } else if (!remoteRow) {
-      // Deleted remotely, but we have it locally - keep local version
-      merged.push(localRow);
-    } else {
-      // Exists in both - check if local changed
-      const localChanged = JSON.stringify(localRow) !== JSON.stringify(baselineRow);
-      const remoteChanged = JSON.stringify(remoteRow) !== JSON.stringify(baselineRow);
-      
-      if (localChanged && !remoteChanged) {
-        // Only local changed, keep local
-        merged.push(localRow);
-      } else if (!localChanged && remoteChanged) {
-        // Only remote changed, take remote
-        merged.push(remoteRow);
-      } else if (localChanged && remoteChanged) {
-        // Both changed - prefer local (last write wins)
-        console.warn(`Row ${localRow.id} changed on both devices, keeping local version`);
-        merged.push(localRow);
-      } else {
-        // Neither changed, take remote (might have newer metadata)
-        merged.push(remoteRow);
-      }
-    }
-    seenIds.add(localRow.id);
-  }
-  
-  // Add remote rows that don't exist locally
-  for (const remoteRow of remoteRows) {
-    if (!seenIds.has(remoteRow.id)) {
-      const baselineRow = baselineMap.get(remoteRow.id);
-      if (!baselineRow) {
-        // Remotely added row, add it
-        merged.push(remoteRow);
-      }
-      // If it was in baseline but not local, it was deleted locally - don't add
-    }
-  }
-  
-  return merged;
-}
-
-/**
- * Merge districts by ID (similar strategy to rows)
- */
-function mergeDistrictsBy(localDistricts, remoteDistricts, baselineDistricts) {
-  const localMap = new Map(localDistricts.map(d => [d.id, d]));
-  const remoteMap = new Map(remoteDistricts.map(d => [d.id, d]));
-  const baselineMap = new Map(baselineDistricts.map(d => [d.id, d]));
-  
-  const merged = [];
-  const seenIds = new Set();
-  
-  for (const localDistrict of localDistricts) {
-    const baselineDistrict = baselineMap.get(localDistrict.id);
-    const remoteDistrict = remoteMap.get(localDistrict.id);
-    
-    if (!baselineDistrict) {
-      // Locally added
-      merged.push(localDistrict);
-    } else if (!remoteDistrict) {
-      // Deleted remotely, keep local
-      merged.push(localDistrict);
-    } else {
-      // Exists in both - check changes
-      const localChanged = JSON.stringify(localDistrict) !== JSON.stringify(baselineDistrict);
-      const remoteChanged = JSON.stringify(remoteDistrict) !== JSON.stringify(baselineDistrict);
-      
-      if (localChanged && !remoteChanged) {
-        merged.push(localDistrict);
-      } else if (!localChanged && remoteChanged) {
-        merged.push(remoteDistrict);
-      } else if (localChanged && remoteChanged) {
-        console.warn(`District ${localDistrict.id} changed on both devices, keeping local version`);
-        merged.push(localDistrict);
-      } else {
-        merged.push(remoteDistrict);
-      }
-    }
-    seenIds.add(localDistrict.id);
-  }
-  
-  for (const remoteDistrict of remoteDistricts) {
-    if (!seenIds.has(remoteDistrict.id)) {
-      const baselineDistrict = baselineMap.get(remoteDistrict.id);
-      if (!baselineDistrict) {
-        merged.push(remoteDistrict);
-      }
-    }
-  }
-  
-  return merged;
-}
-
-/**
- * Merge config (prefer remote for unchanged fields, keep local changes)
- */
-function mergeConfig(localConfig, remoteConfig, baselineConfig) {
-  const merged = { ...DEFAULT_CONFIG };
-  
-  for (const key of Object.keys(DEFAULT_CONFIG)) {
-    const localVal = localConfig[key];
-    const remoteVal = remoteConfig[key];
-    const baselineVal = baselineConfig[key];
-    
-    const localChanged = localVal !== baselineVal;
-    const remoteChanged = remoteVal !== baselineVal;
-    
-    if (localChanged && !remoteChanged) {
-      merged[key] = localVal;
-    } else if (!localChanged && remoteChanged) {
-      merged[key] = remoteVal !== undefined ? remoteVal : DEFAULT_CONFIG[key];
-    } else if (localChanged && remoteChanged) {
-      // Both changed - prefer local
-      merged[key] = localVal;
-    } else {
-      // Neither changed - use remote if defined, otherwise keep default
-      merged[key] = remoteVal !== undefined ? remoteVal : DEFAULT_CONFIG[key];
-    }
-  }
-  
-  return merged;
 }
 
 async function pushToFirebase() {
@@ -795,9 +623,6 @@ function loadState() {
       lastSyncedAt: (typeof parsed.lastSyncedAt === 'string') ? parsed.lastSyncedAt : null,
       banner: null,
     };
-    
-    // Initialize baseline so merge path works on first sync
-    localBaselineState = JSON.parse(JSON.stringify(state));
   } catch (err) {
     console.error('Failed to load state:', err);
     showBanner('Saved data was corrupt, started fresh');
@@ -811,10 +636,8 @@ function loadState() {
   }
 }
 
-function saveState(skipMarkDirty) {
-  if (!skipMarkDirty) {
-    markStateModified();
-  }
+function saveState() {
+  markStateModified();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       config: state.config,
@@ -829,9 +652,7 @@ function saveState(skipMarkDirty) {
       console.error('Save failed:', err);
     }
   }
-  if (!skipMarkDirty) {
-    schedulePush();
-  }
+  schedulePush();
 }
 
 function showBanner(message) {
