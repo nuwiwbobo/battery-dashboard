@@ -48,8 +48,8 @@ Each district card contains a dedicated configuration panel:
 | --- | --- | --- |
 | Profile | `RSS` | Switches between **RSS** ($300\,\text{Ah}$, $0.75\,\text{m}\Omega$ baseline) and **TSS/ER** ($200\,\text{Ah}$, $0.85\,\text{m}\Omega$ baseline). |
 | Healthy Cap (Ah) | `300` | Baseline capacity used for SOH calculation: $\text{SOH} = (\text{Measured} / \text{Healthy}) \times 100\%$. |
-| Batas Atas (V) | `2.5` | Upper voltage limit threshold ($V > \text{batas\_atas}$). |
-| Batas Bawah (V) | `2.0` | Lower voltage limit threshold ($V \le \text{batas\_bawah}$). |
+| Batas Atas (V) | `2.5` | Upper voltage limit threshold. |
+| Batas Bawah (V) | `2.0` | Lower voltage limit threshold. |
 
 ---
 
