@@ -1,6 +1,6 @@
 'use strict';
 
-// Build: 2026-07-22-r12 (Manual Firebase Upload/Download & Local Storage)
+// Build: 2026-07-22-r13 (Per-District Configuration & Auto-Download on Load)
 
 // ====================================================================
 // Calculations & Helper Functions
@@ -225,105 +225,7 @@ function exportCSV(districtId) {
 }
 
 // ====================================================================
-// Firebase Manual Sync Logic
-// ====================================================================
-
-const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
-
-async function downloadFromFirebase() {
-  if (typeof fetch === 'undefined') return;
-  setSyncStatus('Downloading...');
-
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-
-    const remote = await res.json();
-    if (!remote) {
-      showBanner('Cloud database is empty.');
-      setSyncStatus('Idle');
-      return;
-    }
-
-    const remoteDistricts = remote.districts || [];
-    const remoteRows = remote.rows || [];
-    const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
-
-    state = {
-      config: remoteConfig,
-      districts: remoteDistricts,
-      rows: remoteRows,
-      lastSyncedAt: remote.updatedAt || new Date().toISOString(),
-      banner: null,
-    };
-
-    saveState(false); // Save locally without setting modified status
-    render();
-
-    setSyncStatus('Downloaded');
-    showBanner('📥 Successfully downloaded latest data from Firebase.');
-  } catch (e) {
-    console.error('Download failed:', e);
-    setSyncStatus('Error');
-    showBanner(`❌ Download failed: ${e.message}`);
-  }
-}
-
-async function uploadToFirebase() {
-  if (typeof fetch === 'undefined') return;
-  setSyncStatus('Uploading...');
-
-  try {
-    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
-    const updatedAt = new Date().toISOString();
-
-    const payload = {
-      config: state.config,
-      districts: state.districts,
-      rows: state.rows,
-      updatedAt: updatedAt,
-      version: 1
-    };
-
-    const res = await fetch(`${baseUrl}/state.json`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-
-    state.lastSyncedAt = updatedAt;
-    saveState(false);
-
-    setSyncStatus('Uploaded');
-    showBanner('📤 Successfully uploaded data to Firebase.');
-  } catch (e) {
-    console.error('Upload failed:', e);
-    setSyncStatus('Error');
-    showBanner(`❌ Upload failed: ${e.message}`);
-  }
-}
-
-function setSyncStatus(text) {
-  if (typeof document === 'undefined') return;
-  const el = document.getElementById('sync-status');
-  if (el) el.textContent = text;
-}
-
-function showBanner(message) {
-  const el = document.getElementById('banner');
-  if (!el) {
-    alert(message);
-    return;
-  }
-  el.textContent = message;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
-}
-
-// ====================================================================
-// Local State Management
+// State Management & Constants
 // ====================================================================
 
 const STORAGE_KEY = 'battery-dashboard-state-v1';
@@ -351,11 +253,11 @@ const SAMPLE_ROW = {
 };
 
 let state = {
-  config: { ...DEFAULT_CONFIG },
   rows: [{ ...SAMPLE_ROW }],
   districts: [
-    { id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] },
+    { id: 1, name: DEFAULT_DISTRICT_NAME, config: { ...DEFAULT_CONFIG }, rowIds: [1] },
   ],
+  lastSyncedAt: null,
   banner: null,
 };
 
@@ -390,7 +292,7 @@ function loadState() {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return;
-    if (!parsed.config || !Array.isArray(parsed.rows)) return;
+    if (!Array.isArray(parsed.rows)) return;
 
     const rows = parsed.rows.map((r, i) => ({
       id: i + 1,
@@ -405,21 +307,18 @@ function loadState() {
     let districts = Array.isArray(parsed.districts) ? parsed.districts.map((d, i) => ({
       id: (typeof d.id === 'number' && !isNaN(d.id)) ? d.id : i + 1,
       name: (typeof d.name === 'string' && d.name.length > 0) ? d.name : `District ${i + 1}`,
+      config: {
+        ...DEFAULT_CONFIG,
+        ...(d.config || parsed.config || {})
+      },
       rowIds: Array.isArray(d.rowIds) ? d.rowIds.filter(id => rows.some(r => r.id === id)) : [],
     })) : [];
 
     if (districts.length === 0) {
-      districts.push({ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: rows.map(r => r.id) });
+      districts.push({ id: 1, name: DEFAULT_DISTRICT_NAME, config: { ...DEFAULT_CONFIG }, rowIds: rows.map(r => r.id) });
     }
 
     state = {
-      config: {
-        ...DEFAULT_CONFIG,
-        capacityProfile: (parsed.config.capacityProfile === 'TSS/ER') ? 'TSS/ER' : 'RSS',
-        healthyCapacity: parsed.config.healthyCapacity || DEFAULT_CONFIG.healthyCapacity,
-        batasAtas: parsed.config.batasAtas || DEFAULT_CONFIG.batasAtas,
-        batasBawah: parsed.config.batasBawah || DEFAULT_CONFIG.batasBawah,
-      },
       rows,
       districts,
       lastSyncedAt: (typeof parsed.lastSyncedAt === 'string') ? parsed.lastSyncedAt : null,
@@ -433,7 +332,6 @@ function loadState() {
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      config: state.config,
       rows: state.rows,
       districts: state.districts,
       lastSyncedAt: state.lastSyncedAt,
@@ -444,7 +342,105 @@ function saveState() {
 }
 
 // ====================================================================
-// Rendering & Calculation Bridge
+// Firebase Manual & Auto-Download Sync Logic
+// ====================================================================
+
+const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+async function downloadFromFirebase(isAuto = false) {
+  if (typeof fetch === 'undefined') return;
+  setSyncStatus(isAuto ? 'Auto-syncing...' : 'Downloading...');
+
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+    const remote = await res.json();
+    if (!remote) {
+      if (!isAuto) showBanner('Cloud database is empty.');
+      setSyncStatus('Idle');
+      return;
+    }
+
+    const remoteRows = remote.rows || [];
+    const remoteDistricts = (remote.districts || []).map(d => ({
+      ...d,
+      config: { ...DEFAULT_CONFIG, ...(d.config || remote.config || {}) }
+    }));
+
+    state = {
+      districts: remoteDistricts.length > 0 ? remoteDistricts : [{ id: 1, name: DEFAULT_DISTRICT_NAME, config: { ...DEFAULT_CONFIG }, rowIds: [] }],
+      rows: remoteRows,
+      lastSyncedAt: remote.updatedAt || new Date().toISOString(),
+      banner: null,
+    };
+
+    saveState();
+    render();
+
+    setSyncStatus('Downloaded');
+    showBanner(isAuto ? '⚡ Data automatically loaded from cloud.' : '📥 Successfully downloaded latest data from Firebase.');
+  } catch (e) {
+    console.error('Download failed:', e);
+    setSyncStatus('Error');
+    showBanner(`❌ Download failed: ${e.message}. Using local storage.`);
+  }
+}
+
+async function uploadToFirebase() {
+  if (typeof fetch === 'undefined') return;
+  setSyncStatus('Uploading...');
+
+  try {
+    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
+    const updatedAt = new Date().toISOString();
+
+    const payload = {
+      districts: state.districts,
+      rows: state.rows,
+      updatedAt: updatedAt,
+      version: 2
+    };
+
+    const res = await fetch(`${baseUrl}/state.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+    state.lastSyncedAt = updatedAt;
+    saveState();
+
+    setSyncStatus('Uploaded');
+    showBanner('📤 Successfully uploaded data to Firebase.');
+  } catch (e) {
+    console.error('Upload failed:', e);
+    setSyncStatus('Error');
+    showBanner(`❌ Upload failed: ${e.message}`);
+  }
+}
+
+function setSyncStatus(text) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('sync-status');
+  if (el) el.textContent = text;
+}
+
+function showBanner(message) {
+  const el = document.getElementById('banner');
+  if (!el) {
+    alert(message);
+    return;
+  }
+  el.textContent = message;
+  el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+// ====================================================================
+// Calculations & District Rendering
 // ====================================================================
 
 function computeRowDerived(row, config) {
@@ -467,35 +463,7 @@ function formatNumber(n, digits = 4) {
 }
 
 function render() {
-  renderConfig();
   renderDistricts();
-}
-
-function renderConfig() {
-  const el = document.getElementById('config-profile');
-  if (el) el.value = state.config.capacityProfile;
-  const healthyEl = document.getElementById('config-healthy');
-  if (healthyEl) healthyEl.value = state.config.healthyCapacity;
-  const atasEl = document.getElementById('config-batas-atas');
-  if (atasEl) atasEl.value = state.config.batasAtas;
-  const bawahEl = document.getElementById('config-batas-bawah');
-  if (bawahEl) bawahEl.value = state.config.batasBawah;
-  updateThresholdDisplay();
-  updateBaselineDisplay();
-}
-
-function updateThresholdDisplay() {
-  const el = document.getElementById('oc-threshold');
-  if (!el) return;
-  const capacity = state.config.capacityProfile === 'RSS' ? state.config.rssCapacity : state.config.tssErCapacity;
-  el.textContent = `${capacity / 5} A`;
-}
-
-function updateBaselineDisplay() {
-  const el = document.getElementById('ir-baseline');
-  if (!el) return;
-  const baseline = state.config.capacityProfile === 'RSS' ? state.config.irBaselineRss : state.config.irBaselineTssEr;
-  el.textContent = `${(baseline * 1000).toFixed(2)} mΩ`;
 }
 
 function statusClass(status) {
@@ -547,7 +515,7 @@ function renderDistrictSummaryHTML(district) {
   const meanV = mean(voltages);
   let aman = 0, cek = 0, tidakLayak = 0;
   districtRows.forEach(row => {
-    const d = computeRowDerived(row, state.config);
+    const d = computeRowDerived(row, district.config);
     if (d.status === 'Aman') aman++;
     else if (d.status === 'Cek') cek++;
     else if (d.status === 'Tidak Layak') tidakLayak++;
@@ -562,15 +530,54 @@ function renderDistrictSummaryHTML(district) {
   `;
 }
 
+function renderDistrictConfigHTML(district) {
+  const cfg = district.config;
+  const ocThreshold = (cfg.capacityProfile === 'RSS' ? cfg.rssCapacity : cfg.tssErCapacity) / 5;
+  const irBaseline = cfg.capacityProfile === 'RSS' ? cfg.irBaselineRss : cfg.irBaselineTssEr;
+
+  return `
+    <div class="district-config-panel">
+      <div class="config-grid">
+        <label>
+          Profile
+          <select class="district-cfg-field" data-district-id="${district.id}" data-config="capacityProfile">
+            <option value="RSS" ${cfg.capacityProfile === 'RSS' ? 'selected' : ''}>RSS</option>
+            <option value="TSS/ER" ${cfg.capacityProfile === 'TSS/ER' ? 'selected' : ''}>TSS/ER</option>
+          </select>
+        </label>
+        <label>
+          Healthy Cap (Ah)
+          <input type="text" inputmode="decimal" class="district-cfg-field" data-district-id="${district.id}" data-config="healthyCapacity" value="${cfg.healthyCapacity ?? ''}">
+        </label>
+        <label>
+          Batas atas (V)
+          <input type="text" inputmode="decimal" class="district-cfg-field" data-district-id="${district.id}" data-config="batasAtas" value="${cfg.batasAtas ?? ''}">
+        </label>
+        <label>
+          Batas bawah (V)
+          <input type="text" inputmode="decimal" class="district-cfg-field" data-district-id="${district.id}" data-config="batasBawah" value="${cfg.batasBawah ?? ''}">
+        </label>
+        <div class="config-info">
+          Over-current: <strong>${ocThreshold} A</strong>
+        </div>
+        <div class="config-info">
+          IR Baseline: <strong>${(irBaseline * 1000).toFixed(2)} mΩ</strong>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderDistrictHTML(district) {
   const districtRows = getRowsForDistrict(district);
-  const tableRowsHTML = districtRows.map((row, idx) => renderRowHTML(row, idx + 1, state.config)).join('');
+  const tableRowsHTML = districtRows.map((row, idx) => renderRowHTML(row, idx + 1, district.config)).join('');
   return `
     <div class="district" data-district-id="${district.id}">
       <div class="district-header">
         <h3 class="district-name" contenteditable="true" data-district-id="${district.id}">${escapeHTML(district.name)}</h3>
         <button type="button" class="district-delete-btn" data-district-id="${district.id}">Delete district</button>
       </div>
+      ${renderDistrictConfigHTML(district)}
       ${renderDistrictSummaryHTML(district)}
       <div class="table-wrapper">
         <table class="cell-table">
@@ -611,45 +618,29 @@ function renderDistricts() {
   container.innerHTML = state.districts.map(renderDistrictHTML).join('');
 }
 
-function updateRowInPlace(rowId) {
-  const row = state.rows.find(r => r.id === rowId);
-  if (!row) return;
-  const tr = document.querySelector(`tr[data-row-id="${rowId}"]`);
-  if (!tr) return;
-  const d = computeRowDerived(row, state.config);
-  const cells = tr.querySelectorAll('td');
-  if (cells.length < 13) return;
-  const tempInput = cells[7].querySelector('input');
-  if (tempInput) {
-    tempInput.value = row.temperature ?? '';
-    tempInput.className = 'cell-input ' + tempClass(row.temperature);
-  }
-  cells[8].textContent = formatNumber(d.iRipple, 4);
-  cells[9].textContent = formatNumber(d.power, 6);
-  cells[10].textContent = d.soh == null ? '—' : d.soh.toFixed(2) + '%';
-  cells[11].className = 'derived ' + (d.overCurrent === true ? 'status-true' : d.overCurrent === false ? 'status-false' : '');
-  cells[11].textContent = d.overCurrent == null ? '—' : d.overCurrent ? 'TRUE' : 'FALSE';
-  cells[12].className = 'derived ' + statusClass(d.status);
-  cells[12].textContent = d.status ?? '—';
-}
-
-function updateDistrictSummaryInPlace(districtId) {
+function updateDistrictHTMLInPlace(districtId) {
   const district = state.districts.find(d => d.id === districtId);
   if (!district) return;
-  const section = document.querySelector(`.district[data-district-id="${districtId}"] .district-summary`);
-  if (!section) return;
-  const wrap = document.createElement('div');
-  wrap.innerHTML = renderDistrictSummaryHTML(district);
-  section.replaceWith(wrap.firstElementChild);
+  const districtEl = document.querySelector(`.district[data-district-id="${districtId}"]`);
+  if (!districtEl) return;
+  
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = renderDistrictHTML(district);
+  districtEl.replaceWith(tempDiv.firstElementChild);
 }
 
 // ====================================================================
-// District Operations & Event Handlers
+// District CRUD Operations & Wiring
 // ====================================================================
 
 function addDistrict() {
   const newId = nextDistrictId();
-  state.districts.push({ id: newId, name: `District ${newId}`, rowIds: [] });
+  state.districts.push({
+    id: newId,
+    name: `District ${newId}`,
+    config: { ...DEFAULT_CONFIG },
+    rowIds: []
+  });
   saveState();
   renderDistricts();
 }
@@ -699,16 +690,42 @@ function renameDistrict(districtId, newName) {
 function wireEvents() {
   // Sync Buttons
   const downloadBtn = document.getElementById('download-db-btn');
-  if (downloadBtn) downloadBtn.addEventListener('click', downloadFromFirebase);
+  if (downloadBtn) downloadBtn.addEventListener('click', () => downloadFromFirebase(false));
 
   const uploadBtn = document.getElementById('upload-db-btn');
   if (uploadBtn) uploadBtn.addEventListener('click', uploadToFirebase);
 
-  // Table inputs delegation
+  // Table inputs & District Config Event Delegation
   const container = document.getElementById('districts-container');
   if (container) {
     container.addEventListener('input', (e) => {
       const target = e.target;
+      
+      // Handle District Specific Config Changes
+      if (target.classList.contains('district-cfg-field')) {
+        const districtId = parseInt(target.dataset.districtId, 10);
+        const configKey = target.dataset.config;
+        const district = state.districts.find(d => d.id === districtId);
+        if (!district) return;
+
+        if (configKey === 'capacityProfile') {
+          district.config.capacityProfile = target.value;
+        } else {
+          const num = parseFloat(target.value.replace(',', '.'));
+          if (!isNaN(num) && num > 0) {
+            district.config[configKey] = num;
+            target.classList.remove('invalid');
+          } else {
+            target.classList.add('invalid');
+            return;
+          }
+        }
+        saveState();
+        updateDistrictHTMLInPlace(districtId);
+        return;
+      }
+
+      // Handle Cell Data Inputs
       if (!target.classList || !target.classList.contains('cell-input')) return;
       const rowId = parseInt(target.dataset.rowId, 10);
       const field = target.dataset.field;
@@ -733,9 +750,8 @@ function wireEvents() {
         }
       }
       saveState();
-      updateRowInPlace(rowId);
       const district = state.districts.find(d => d.rowIds.includes(rowId));
-      if (district) updateDistrictSummaryInPlace(district.id);
+      if (district) updateDistrictHTMLInPlace(district.id);
     });
 
     container.addEventListener('click', (e) => {
@@ -777,24 +793,12 @@ function wireEvents() {
       if (!confirm('Clear all local data and start fresh?')) return;
       localStorage.removeItem(STORAGE_KEY);
       state = {
-        config: { ...DEFAULT_CONFIG },
         rows: [{ ...SAMPLE_ROW }],
-        districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
+        districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, config: { ...DEFAULT_CONFIG }, rowIds: [1] }],
+        lastSyncedAt: null,
         banner: null,
       };
       render();
-    });
-  }
-
-  const profileEl = document.getElementById('config-profile');
-  if (profileEl) {
-    profileEl.addEventListener('change', () => {
-      state.config.capacityProfile = profileEl.value;
-      saveState();
-      updateThresholdDisplay();
-      updateBaselineDisplay();
-      state.rows.forEach(r => updateRowInPlace(r.id));
-      state.districts.forEach(d => updateDistrictSummaryInPlace(d.id));
     });
   }
 }
@@ -803,7 +807,8 @@ function bootstrap() {
   loadState();
   render();
   wireEvents();
-  setSyncStatus('Idle');
+  // Automatically download database when opening or refreshing link
+  downloadFromFirebase(true);
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
