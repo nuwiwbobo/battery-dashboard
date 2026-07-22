@@ -140,14 +140,15 @@ function mean(arr) {
 // ====================================================================
 // CSV import/export
 // ====================================================================
-
 function parseCSV(text) {
   if (typeof text !== 'string') return [];
-  return text.split('\n')
+  return text
+    .replace(/\r\n/g, '\n') // Normalize line endings
+    .split('\n')
     .map(line => line.trim())
     .filter(line => line.length > 0)
-    .slice(1)
-    .map(line => line.split(',').map(c => c.trim()));
+    .slice(1) // Skip header line
+    .map(line => line.split(',').map(c => c.trim().replace(/^"|"$/g, ''))); // Strip extra quotes
 }
 
 function parseNumberOrNull(s) {
@@ -194,24 +195,44 @@ function addCSVToDistrict(districtId, parsedRows) {
   const district = state.districts.find(d => d.id === districtId);
   if (!district) return 0;
   let added = 0;
+
   parsedRows.forEach(rowData => {
-    if (!Array.isArray(rowData) || rowData.length < 6) return;
+    // FIX 1: Allow 5-column CSVs (like ADM.csv) or 6-column CSVs
+    if (!Array.isArray(rowData) || rowData.length < 5) return;
+
+    // Mapping columns from ADM.csv: [No, V_MIN, TEMP_MAX, INT_RES, CAPACITY]
+    const cellVoltage = parseNumberOrNull(rowData[1]);
+    const temperature = parseNumberOrNull(rowData[2]);
+    const irRaw = parseNumberOrNull(rowData[3]);
+    const capacity = parseNumberOrNull(rowData[4]);
+    const ripple = rowData.length >= 6 ? parseNumberOrNull(rowData[5]) : null;
+
     const newRow = {
-      id: nextRowId(),
-      cellVoltage: parseNumberOrNull(rowData[1]),
-      temperature: parseNumberOrNull(rowData[2]),
-      ir: parseNumberOrNull(rowData[3]),
-      irUnit: 'ohm',
-      measuredCapacity: parseNumberOrNull(rowData[4]),
-      rippleVoltage: parseNumberOrNull(rowData[5]),
+      id: typeof nextRowId === 'function' ? nextRowId() : Date.now() + Math.random(),
+      cellVoltage: cellVoltage,
+      temperature: temperature,
+      ir: irRaw,
+      irUnit: 'mohm', // FIX 2: Set unit to mohm to match ADM.csv values
+      measuredCapacity: capacity,
+      rippleVoltage: ripple,
     };
+
     state.rows.push(newRow);
+    if (!Array.isArray(district.rowIds)) district.rowIds = [];
     district.rowIds.push(newRow.id);
     added++;
   });
+
   if (added > 0) {
     saveState();
-    renderDistricts();
+    if (typeof renderDistricts === 'function') renderDistricts();
+    
+    // Trigger synchronization if you are syncing with Firebase
+    if (typeof markStateModified === 'function') {
+      markStateModified();
+    } else if (typeof schedulePush === 'function') {
+      schedulePush();
+    }
   }
   return added;
 }
@@ -222,7 +243,8 @@ function importCSV(districtId, file) {
   reader.onload = (e) => {
     const text = e.target.result;
     const parsed = parseCSV(text);
-    addCSVToDistrict(districtId, parsed);
+    const count = addCSVToDistrict(districtId, parsed);
+    console.log(`Successfully imported ${count} cells.`);
   };
   reader.readAsText(file);
 }
@@ -237,7 +259,6 @@ function exportCSV(districtId) {
   const filename = `district_${name}_${date}.csv`;
   downloadCSV(filename, csv);
 }
-
 // ====================================================================
 // Firebase Realtime Database cloud sync
 // ====================================================================
