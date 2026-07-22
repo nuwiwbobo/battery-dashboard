@@ -552,8 +552,8 @@ if (typeof window !== 'undefined') {
 // Security: anyone with the URL can read/write. To restrict, add Firebase Auth
 // and tighten the rules at https://console.firebase.google.com/.
 const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
-const SYNC_POLL_INTERVAL_MS = 1000;
-const SYNC_PUSH_DEBOUNCE_MS = 300;
+const SYNC_POLL_INTERVAL_MS = 10000;
+const SYNC_PUSH_DEBOUNCE_MS = 5000;
 
 // ====================================================================
 // State management (browser-only)
