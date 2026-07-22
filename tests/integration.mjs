@@ -64,7 +64,7 @@ const wrapped = `(function(document, window, localStorage, setTimeout, setInterv
   return {
     state, getState, setState, loadState, saveState,
     computeRowDerived, wireEvents, render, renderDistricts,
-    pullFromFirebase, pushToFirebase, schedulePush, setSyncStatus,
+    pullFromFirebase, pushToFirebase, schedulePush, markStateModified, setSyncStatus,
     bootstrap, addDistrict, addRowToDistrict, deleteDistrict, renameDistrict,
     renderRowHTML, tempClass, parseCSV, rowsToCSV, addCSVToDistrict,
     batteryStatus, sohPercent,
@@ -75,7 +75,7 @@ const fn = eval(wrapped);
 const api = fn(document, window, localStorage, setTimeout, setInterval, confirm);
 const {
   state, getState, loadState, saveState, bootstrap, render, renderDistricts,
-  pullFromFirebase, pushToFirebase, schedulePush, setSyncStatus, wireEvents,
+  pullFromFirebase, pushToFirebase, schedulePush, markStateModified, setSyncStatus, wireEvents,
   addDistrict, addRowToDistrict, deleteDistrict, renameDistrict,
   renderRowHTML, tempClass, parseCSV, rowsToCSV, addCSVToDistrict,
   batteryStatus, sohPercent, DEFAULT_CONFIG, FIREBASE_DB_URL, SAMPLE_ROW,
@@ -121,11 +121,11 @@ assert(batteryStatus(row1.cellVoltage, 0.0007, sohPercent(280, 300), 2.5, 2.0, 0
 console.log('\n=== Test 4: Battery status V warning + IR ok + SOH>80 → Cek (V warning wins) ===');
 assert(batteryStatus(2.3, 0.0007, 85, 2.5, 2.0, 0.00075) === 'Cek', 'Cek for V warning');
 
-console.log('\n=== Test 5: Battery status IR bad wins over V ok ===');
-assert(batteryStatus(2.6, 0.0012, 90, 2.5, 2.0, 0.00075) === 'Tidak Layak', 'Tidak Layak (IR bad)');
+console.log('\n=== Test 5: Battery status IR bad with SOH>80% → Cek (SOH>80% gates to Cek) ===');
+assert(batteryStatus(2.6, 0.0012, 90, 2.5, 2.0, 0.00075) === 'Cek', 'Cek (IR bad but SOH>80%)');
 
-console.log('\n=== Test 6: Battery status V bad wins over IR ok ===');
-assert(batteryStatus(1.9, 0.0007, 90, 2.5, 2.0, 0.00075) === 'Tidak Layak', 'Tidak Layak (V bad)');
+console.log('\n=== Test 6: Battery status V bad with SOH>80% → Cek (SOH>80% gates to Cek) ===');
+assert(batteryStatus(1.9, 0.0007, 90, 2.5, 2.0, 0.00075) === 'Cek', 'Cek (V bad but SOH>80%)');
 
 console.log('\n=== Test 7: tempClass applies correct classes ===');
 assert(tempClass(20) === '', 'no class for temp 20');
@@ -173,12 +173,29 @@ assert(state.rows.length === rowCountBefore - 1, 'rows removed too');
 // CSV
 // ====================================================================
 
-console.log('\n=== Test 12: parseCSV splits lines and strips header ===');
+console.log('\n=== Test 12: parseCSV with full header ===');
 const csv = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage\n1,2.5,25,0.0007,300,0.005\n2,2.3,30,0.0008,280,0.01';
 const parsed = parseCSV(csv);
 assert(parsed.length === 2, 'parsed 2 data rows');
-assert(parsed[0][0] === '1', 'first row battery_no');
-assert(parsed[1][4] === '280', 'second row capacity');
+assert(parsed[0].cellVoltage === 2.5, 'first row cellVoltage');
+assert(parsed[1].measuredCapacity === 280, 'second row measuredCapacity');
+
+console.log('\n=== Test 12b: parseCSV with custom column names ===');
+const customCsv = 'No,V_MIN,TEMP_MAX,INT_RES,CAPACITY\n1,1.983,29,1.1,1.9\n2,1.709,0,6.2,9.2747';
+const customParsed = parseCSV(customCsv);
+assert(customParsed.length === 2, 'parsed 2 data rows from custom headers');
+assert(customParsed[0].cellVoltage === 1.983, 'V_MIN maps to cellVoltage');
+assert(customParsed[0].temperature === 29, 'TEMP_MAX maps to temperature');
+assert(customParsed[0].ir === 1.1, 'INT_RES maps to ir');
+assert(customParsed[0].measuredCapacity === 1.9, 'CAPACITY maps to measuredCapacity');
+assert(customParsed[1].cellVoltage === 1.709, 'second row V_MIN maps to cellVoltage');
+
+console.log('\n=== Test 12c: parseCSV without header uses default column order ===');
+const noHeaderCsv = '1,2.5,25,0.0007,300,0.005\n2,2.3,30,0.0008,280,0.01';
+const noHeaderParsed = parseCSV(noHeaderCsv);
+assert(noHeaderParsed.length === 2, 'parsed 2 data rows without header');
+assert(noHeaderParsed[0].cellVoltage === 2.5, 'first row cellVoltage (positional)');
+assert(noHeaderParsed[1].measuredCapacity === 280, 'second row measuredCapacity (positional)');
 
 console.log('\n=== Test 13: rowsToCSV produces valid CSV ===');
 const rowsForExport = [
@@ -190,11 +207,27 @@ assert(exported.split('\n')[0] === 'battery_no,cell_voltage,temperature,ir,capac
 assert(exported.split('\n')[1] === '1,2.5,25,0.0007,300,0.005', 'first row correct (ir in ohms)');
 assert(exported.split('\n')[2] === '2,2.3,30,0.0008,280,0.01', 'second row correct (ir in ohms)');
 
-console.log('\n=== Test 14: CSV roundtrip ===');
+console.log('\n=== Test 14: CSV roundtrip with default headers ===');
 const reparsed = parseCSV(exported);
 assert(reparsed.length === 2, 'roundtrip preserves 2 rows');
-assert(reparsed[0][1] === '2.5', 'roundtrip preserves V');
-assert(reparsed[1][3] === '0.0008', 'roundtrip preserves ir (in ohms)');
+assert(reparsed[0].cellVoltage === 2.5, 'roundtrip preserves V');
+assert(reparsed[1].ir === 0.0008, 'roundtrip preserves ir (in ohms)');
+
+console.log('\n=== Test 14b: addCSVToDistrict accepts parsed object rows ===');
+// Reset and import custom-header CSV
+var importState = getState();
+importState.districts = [{ id: 1, name: 'Test', rowIds: [] }];
+importState.rows = [];
+// Use the custom CSV (No,V_MIN,TEMP_MAX,INT_RES,CAPACITY)
+const customParsed2 = parseCSV(customCsv);
+const added = addCSVToDistrict(1, customParsed2);
+assert(added === 2, 'added 2 rows from custom CSV');
+importState = getState();
+assert(importState.rows.length === 2, 'rows added to state');
+assert(importState.rows[0].cellVoltage === 1.983, 'first imported row has correct V');
+assert(importState.rows[0].temperature === 29, 'first imported row has correct temp');
+assert(importState.rows[0].ir === 1.1, 'first imported row has correct ir');
+assert(importState.rows[0].measuredCapacity === 1.9, 'first imported row has correct capacity');
 
 // ====================================================================
 // Per-district numbering
@@ -242,15 +275,16 @@ try {
   globalThis.fetch = originalFetch;
 }
 
-console.log('\n=== Test 18: pushToFirebase calls fetch with PUT method ===');
+console.log('\n=== Test 18: pushToFirebase calls fetch with PATCH method ===');
+markStateModified();
 let pushMethod = null;
 globalThis.fetch = (url, opts) => {
-  pushMethod = opts ? opts.method : null;
-  return Promise.resolve({ ok: true });
+  pushMethod = pushMethod || (opts ? opts.method : null);
+  return Promise.resolve({ ok: true, json: async () => null });
 };
 try {
   await pushToFirebase();
-  assert(pushMethod === 'PUT', 'PUT method used');
+  assert(pushMethod === 'PATCH', 'PATCH method used');
 } finally {
   globalThis.fetch = originalFetch;
 }

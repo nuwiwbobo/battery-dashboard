@@ -140,15 +140,77 @@ function mean(arr) {
 // ====================================================================
 // CSV import/export
 // ====================================================================
+
+// Map CSV column names (lowercased, normalized) to dashboard fields.
+// Uses substring matching: "cell_voltage" → contains "voltage" → cellVoltage
+// Check order: most-specific substring first to avoid false positives.
+const CSV_COLUMN_MAP = {
+  rippleVoltage: ['ripple', 'vripple', 'v_ripple', 'vrms'],
+  measuredCapacity: ['cap', 'capacity', 'ah', 'measured'],
+  ir: ['ir', 'int_res', 'resistance', 'res'],
+  temperature: ['temp', 'temperature'],
+  cellVoltage: ['voltage', 'v_min', 'v_minimum', 'volt', 'cell_v'],
+};
+
 function parseCSV(text) {
   if (typeof text !== 'string') return [];
-  return text
-    .replace(/\r\n/g, '\n') // Normalize line endings
+  const lines = text
+    .replace(/\r\n/g, '\n')
     .split('\n')
     .map(line => line.trim())
-    .filter(line => line.length > 0)
-    .slice(1) // Skip header line
-    .map(line => line.split(',').map(c => c.trim().replace(/^"|"$/g, ''))); // Strip extra quotes
+    .filter(line => line.length > 0);
+  if (lines.length < 1) return [];
+
+  // First non-empty line: could be header OR a data row.
+  // We try to detect: if the first line contains a known keyword
+  // treat it as a header. Otherwise treat all lines as data with default ordering.
+  const firstCells = lines[0].split(',').map(c => c.trim().replace(/^"|"$/g, '').toLowerCase());
+  const firstLineHasKnownHeader = firstCells.some(cell =>
+    Object.values(CSV_COLUMN_MAP).some(aliases => aliases.some(a => cell.includes(a)))
+  );
+
+  let headerColumns = null;
+  let dataLines;
+  if (firstLineHasKnownHeader) {
+    headerColumns = firstCells;
+    dataLines = lines.slice(1);
+  } else {
+    // No recognizable header — assume default column order
+    dataLines = lines;
+  }
+
+  // Build column index → dashboard field map
+  const fieldForIndex = (cellIdx) => {
+    if (!headerColumns) return null;
+    const col = headerColumns[cellIdx];
+    if (!col) return null;
+    for (const [field, aliases] of Object.entries(CSV_COLUMN_MAP)) {
+      if (aliases.some(a => col.includes(a))) return field;
+    }
+    return null;
+  };
+
+  return dataLines.map(line => {
+    const cells = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    if (!headerColumns) {
+      // Default positional order: battery_no, cell_voltage, temperature, ir, capacity, ripple_voltage
+      return {
+        battery_no: parseNumberOrNull(cells[0]),
+        cellVoltage: parseNumberOrNull(cells[1]),
+        temperature: parseNumberOrNull(cells[2]),
+        ir: parseNumberOrNull(cells[3]),
+        measuredCapacity: parseNumberOrNull(cells[4]),
+        rippleVoltage: parseNumberOrNull(cells[5]),
+      };
+    }
+    // Header-driven: pick out known fields by column name
+    const row = {};
+    for (let i = 0; i < cells.length; i++) {
+      const field = fieldForIndex(i);
+      if (field) row[field] = parseNumberOrNull(cells[i]);
+    }
+    return row;
+  });
 }
 
 function parseNumberOrNull(s) {
@@ -197,24 +259,32 @@ function addCSVToDistrict(districtId, parsedRows) {
   let added = 0;
 
   parsedRows.forEach(rowData => {
-    // FIX 1: Allow 5-column CSVs (like ADM.csv) or 6-column CSVs
-    if (!Array.isArray(rowData) || rowData.length < 5) return;
-
-    // Mapping columns from ADM.csv: [No, V_MIN, TEMP_MAX, INT_RES, CAPACITY]
-    const cellVoltage = parseNumberOrNull(rowData[1]);
-    const temperature = parseNumberOrNull(rowData[2]);
-    const irRaw = parseNumberOrNull(rowData[3]);
-    const capacity = parseNumberOrNull(rowData[4]);
-    const ripple = rowData.length >= 6 ? parseNumberOrNull(rowData[5]) : null;
-
+    // rowData is now an object {cellVoltage, temperature, ir, ...}
+    // Accept both array (legacy) and object (new) format
+    let fields;
+    if (Array.isArray(rowData)) {
+      // Legacy array format: [battery_no, cell_voltage, temperature, ir, capacity, ripple_voltage]
+      // Also handles 5-column CSVs (like ADM.csv)
+      fields = {
+        cellVoltage: rowData[1],
+        temperature: rowData[2],
+        ir: rowData[3],
+        measuredCapacity: rowData[4],
+        rippleVoltage: rowData.length >= 6 ? rowData[5] : null,
+      };
+    } else if (typeof rowData === 'object' && rowData !== null) {
+      fields = rowData;
+    } else {
+      return;
+    }
     const newRow = {
-      id: typeof nextRowId === 'function' ? nextRowId() : Date.now() + Math.random(),
-      cellVoltage: cellVoltage,
-      temperature: temperature,
-      ir: irRaw,
-      irUnit: 'mohm', // FIX 2: Set unit to mohm to match ADM.csv values
-      measuredCapacity: capacity,
-      rippleVoltage: ripple,
+      id: nextRowId(),
+      cellVoltage: parseNumberOrNull(fields.cellVoltage),
+      temperature: parseNumberOrNull(fields.temperature),
+      ir: parseNumberOrNull(fields.ir),
+      irUnit: 'mohm',
+      measuredCapacity: parseNumberOrNull(fields.measuredCapacity),
+      rippleVoltage: parseNumberOrNull(fields.rippleVoltage),
     };
 
     state.rows.push(newRow);
@@ -567,6 +637,7 @@ function loadState() {
 }
 
 function saveState() {
+  markStateModified();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       config: state.config,
@@ -1129,6 +1200,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pullFromFirebase,
     pushToFirebase,
     schedulePush,
+    markStateModified,
     setSyncStatus,
     bootstrap,
     DEFAULT_CONFIG,

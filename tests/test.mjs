@@ -16,6 +16,7 @@ import {
   pullFromFirebase,
   pushToFirebase,
   schedulePush,
+  markStateModified,
   setSyncStatus,
   FIREBASE_DB_URL,
 } from '../app.js';
@@ -127,12 +128,14 @@ test('batteryStatus: Cek — IR 120-150% baseline AND SOH<80%', () => {
   assert.equal(batteryStatus(2.6, 0.0010, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
-test('batteryStatus: SOH exactly 80% defaults to Cek', () => {
-  assert.equal(batteryStatus(2.6, 0.0007, 80, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+test('batteryStatus: SOH exactly 80% with good V/IR → Aman', () => {
+  // SOH=80 falls into Case 2 (≤80%), Condition 3: ir<120% AND V>atas → Aman
+  assert.equal(batteryStatus(2.6, 0.0007, 80, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
 });
 
-test('batteryStatus: SOH<80% with V and IR both in OK range → Cek (gate fails)', () => {
-  assert.equal(batteryStatus(2.6, 0.0007, 75, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+test('batteryStatus: SOH=60% with borderline V → Cek (V in warning range)', () => {
+  // SOH≤80%, V=2.3 in (2.0,2.5) warning range, IR=0.0007 ok → Cek
+  assert.equal(batteryStatus(2.3, 0.0007, 60, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
 test('batteryStatus: TSS/ER profile uses different IR baseline', () => {
@@ -155,10 +158,11 @@ test('batteryStatus: invalid config (atas <= bawah) returns null', () => {
   assert.equal(batteryStatus(2.0, 0.0007, 85, 2.0, 2.5, cfg.irBaselineRss), null);
 });
 
-// Priority tests: worst-of-V-and-IR wins
-test('batteryStatus priority: V ok + IR bad + SOH>80% → Tidak Layak (IR worse wins)', () => {
-  // V=2.6 (ok), IR=0.0012 (>150% baseline 0.001125), SOH=90%
-  assert.equal(batteryStatus(2.6, 0.0012, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+// Priority tests: new logic (SOH > 80% has no Tidak Layak — only Aman/Cek/fallback)
+test('batteryStatus priority: V ok + IR bad + SOH>80% → Cek (no Tidak Layak for high SOH)', () => {
+  // V=2.6 (ok), IR=0.0012 (>150% baseline but SOH>80% → not Tidak Layak), SOH=90%
+  // SOH>80%: Aman no (ir not <120%), Cek no (V not < atas), fallback → Cek
+  assert.equal(batteryStatus(2.6, 0.0012, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
 test('batteryStatus priority: V ok + IR warning + SOH>80% → Cek (IR worse wins)', () => {
@@ -166,9 +170,10 @@ test('batteryStatus priority: V ok + IR warning + SOH>80% → Cek (IR worse wins
   assert.equal(batteryStatus(2.6, 0.0010, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
-test('batteryStatus priority: V bad + IR ok + SOH>80% → Tidak Layak (V worse wins)', () => {
-  // V=1.9 (bad: ≤2.0), IR=0.0007 (ok), SOH=90%
-  assert.equal(batteryStatus(1.9, 0.0007, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+test('batteryStatus priority: V bad + IR ok + SOH>80% → Cek (no Tidak Layak for high SOH)', () => {
+  // V=1.9 (bad: <2.0), IR=0.0007 (ok), SOH=90%
+  // SOH>80%: Aman no (V not > 2.5), Cek no (ir not > 120%), fallback → Cek
+  assert.equal(batteryStatus(1.9, 0.0007, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
 test('batteryStatus priority: V warning + IR ok + SOH>80% → Cek (V worse wins)', () => {
@@ -176,18 +181,21 @@ test('batteryStatus priority: V warning + IR ok + SOH>80% → Cek (V worse wins)
   assert.equal(batteryStatus(2.3, 0.0007, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
-test('batteryStatus priority: V bad + IR bad + SOH>80% → Tidak Layak', () => {
+test('batteryStatus priority: V bad + IR bad + SOH>80% → Cek (SOH>80% gates to Cek)', () => {
   // V=1.9 (bad), IR=0.0015 (bad), SOH=90%
-  assert.equal(batteryStatus(1.9, 0.0015, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Tidak Layak');
+  // SOH>80%: Aman no, Cek: ir>120% AND V<atas → yes → Cek
+  assert.equal(batteryStatus(1.9, 0.0015, 90, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
 });
 
-test('batteryStatus priority: V ok + IR ok + SOH=80% → Cek (gate fails)', () => {
-  // Everything OK but SOH exactly 80 → Cek
-  assert.equal(batteryStatus(2.6, 0.0007, 80, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+test('batteryStatus priority: V ok + IR ok + SOH=80% → Aman (good cells are Aman)', () => {
+  // V=2.6 (ok), IR=0.0007 (ok), SOH=80%
+  // SOH≤80% Case 2, Condition 3: ir<120% AND V>atas → Aman
+  assert.equal(batteryStatus(2.6, 0.0007, 80, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
 });
 
-test('batteryStatus priority: V ok + IR ok + SOH=50% → Cek (SOH<80% defaults Cek even with good V/IR)', () => {
-  assert.equal(batteryStatus(2.6, 0.0007, 50, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Cek');
+test('batteryStatus priority: V ok + IR ok + SOH=50% → Aman (low SOH but good V/IR)', () => {
+  // SOH≤80% Case 2, Condition 3: ir<120% AND V>atas → Aman
+  assert.equal(batteryStatus(2.6, 0.0007, 50, cfg.batasAtas, cfg.batasBawah, cfg.irBaselineRss), 'Aman');
 });
 
 test('batteryStatus priority: V ok + IR bad + SOH=50% → Tidak Layak (IR bad wins over SOH<80% Cek default)', () => {
@@ -328,12 +336,17 @@ test('parseCSV: skips header, returns trimmed cells', () => {
   const csv = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage\n1,2.5,25,0.000563,300,0.005\n2,2.6,26,0.0006,290,0.006';
   const rows = parseCSV(csv);
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], ['1', '2.5', '25', '0.000563', '300', '0.005']);
-  assert.deepEqual(rows[1], ['2', '2.6', '26', '0.0006', '290', '0.006']);
+  assert.equal(rows[0].cellVoltage, 2.5);
+  assert.equal(rows[0].temperature, 25);
+  assert.equal(rows[0].ir, 0.000563);
+  assert.equal(rows[0].measuredCapacity, 300);
+  assert.equal(rows[0].rippleVoltage, 0.005);
+  assert.equal(rows[1].cellVoltage, 2.6);
+  assert.equal(rows[1].ir, 0.0006);
 });
 
 test('parseCSV: skips empty lines', () => {
-  const csv = 'header\n1,2,3,4,5,6\n\n7,8,9,10,11,12\n';
+  const csv = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage\n1,2,3,4,5,6\n\n7,8,9,10,11,12\n';
   const rows = parseCSV(csv);
   assert.equal(rows.length, 2);
 });
@@ -349,9 +362,10 @@ test('parseCSV: only header returns empty array', () => {
 });
 
 test('parseCSV: trims whitespace from each cell', () => {
-  const csv = 'header\n  1 , 2.5 , 25 , 0.000563 , 300 , 0.005 ';
+  const csv = 'battery_no,cell_voltage,temperature,ir,capacity,ripple_voltage\n  1 , 2.5 , 25 , 0.000563 , 300 , 0.005 ';
   const rows = parseCSV(csv);
-  assert.deepEqual(rows[0], ['1', '2.5', '25', '0.000563', '300', '0.005']);
+  assert.equal(rows[0].cellVoltage, 2.5);
+  assert.equal(rows[0].ir, 0.000563);
 });
 
 test('parseNumberOrNull: parses numbers', () => {
@@ -425,17 +439,18 @@ test('CSV roundtrip: write rows → export → parse → equivalent', () => {
   const parsed = parseCSV(csv);
   assert.equal(parsed.length, 3);
 
-  // Round-tripped first row
-  assert.equal(parseNumberOrNull(parsed[0][1]), original[0].cellVoltage);
-  assert.equal(parseNumberOrNull(parsed[0][2]), original[0].temperature);
-  // IR is stored in ohms, so mohm/1000 = ohm
-  assert.equal(parseNumberOrNull(parsed[0][3]), original[0].ir / 1000);
-  assert.equal(parseNumberOrNull(parsed[0][4]), original[0].measuredCapacity);
-  assert.equal(parseNumberOrNull(parsed[0][5]), original[0].rippleVoltage);
+  // Round-tripped first row via object fields
+  // rowsToCSV converts mohm to ohms, parseCSV returns raw values (not parsed numbers for cached row objects)
+  // parseCSV caches raw values as parsed numbers already
+  assert.equal(parsed[0].cellVoltage, original[0].cellVoltage);
+  assert.equal(parsed[0].temperature, original[0].temperature);
+  // IR in ohms: original 0.563 mohm → rowsToCSV divides by 1000 → 0.000563 in CSV
+  assert.equal(parsed[0].ir, original[0].ir / 1000);
+  assert.equal(parsed[0].measuredCapacity, original[0].measuredCapacity);
+  assert.equal(parsed[0].rippleVoltage, original[0].rippleVoltage);
 
-  // Third row has null IR — should be empty string in CSV, null after parse
-  assert.equal(parsed[2][3], '');
-  assert.equal(parseNumberOrNull(parsed[2][3]), null);
+  // Third row has null IR — should be empty string in CSV, null after parseCSV
+  assert.equal(parsed[2].ir, null);
 });
 
 // ====================================================================
@@ -510,20 +525,22 @@ test('pullFromFirebase: updates local state when remote is newer', async () => {
   }
 });
 
-test('pushToFirebase: calls fetch PUT with the hardcoded URL', async () => {
+test('pushToFirebase: calls fetch PATCH with the hardcoded URL', async () => {
+  // New pushToFirebase requires isDirty=true to proceed. Call markStateModified first.
+  markStateModified();
   const originalFetch = globalThis.fetch;
   let capturedUrl = null;
   let capturedMethod = null;
   globalThis.fetch = (url, opts) => {
     capturedUrl = url;
     capturedMethod = opts ? opts.method : null;
-    return Promise.resolve({ ok: true });
+    return Promise.resolve({ ok: true, json: async () => null });
   };
   try {
     await pushToFirebase();
     assert.ok(capturedUrl !== null, 'fetch was called');
     assert.ok(capturedUrl.includes('state.json'), `URL should include /state.json; got ${capturedUrl}`);
-    assert.equal(capturedMethod, 'PUT', 'should use PUT method');
+    assert.equal(capturedMethod, 'PATCH', 'should use PATCH method');
   } finally {
     globalThis.fetch = originalFetch;
   }
