@@ -38,22 +38,47 @@ header {
   margin-bottom: 1rem;
   padding-bottom: 0.75rem;
   border-bottom: 2px solid var(--primary);
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 #sync-status {
   font-size: 0.8rem;
   color: var(--text-muted);
-  padding: 0.25rem 0.5rem;
+  padding: 0.35rem 0.65rem;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   white-space: nowrap;
+  font-weight: 500;
+}
+
+/* Manual Sync Action Buttons */
+.sync-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.sync-btn:hover {
+  background: var(--border);
+  border-color: var(--primary);
+  color: #fff;
 }
 
 h1 {
@@ -145,7 +170,6 @@ h2 {
   width: auto;
   flex: none;
 }
-
 
 input[type="number"],
 input[type="text"],
@@ -324,24 +348,35 @@ button:hover {
   font-weight: 700;
 }
 
+/* Notification Banner Toast */
 #banner {
   position: fixed;
-  top: 1rem;
-  right: 1rem;
-  padding: 0.75rem 1rem;
-  background: var(--danger-bg);
-  border: 1px solid var(--danger);
-  border-radius: 4px;
-  font-size: 0.85rem;
-  max-width: 400px;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  padding: 0.85rem 1.25rem;
+  background: var(--surface-2);
+  border: 1px solid var(--primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  max-width: 420px;
   z-index: 1000;
   color: var(--text);
+  animation: slideIn 0.25s ease-out;
 }
 
-/* ====================================================================
-   Districts (Feature 1)
-   ==================================================================== */
+@keyframes slideIn {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
 
+/* Districts */
 .district {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -396,10 +431,7 @@ button:hover {
 
 .district-summary strong { color: var(--accent); }
 
-/* ====================================================================
-   Temperature color coding (Feature 2)
-   ==================================================================== */
-
+/* Temperature Color Coding */
 #cell-table input.temp-warn,
 .cell-table input.temp-warn {
   background: #ffb81c !important;
