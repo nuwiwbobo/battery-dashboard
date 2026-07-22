@@ -544,192 +544,224 @@ if (typeof window !== 'undefined') {
   });
 }
 // ====================================================================
-// Firebase sync config
+// Firebase Sync Config & State Variables
 // ====================================================================
-
-// Hardcoded Firebase Realtime Database URL — no login, no user setup required.
-// All devices using this URL share the same dashboard state.
-// Security: anyone with the URL can read/write. To restrict, add Firebase Auth
-// and tighten the rules at https://console.firebase.google.com/.
 const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
-const SYNC_POLL_INTERVAL_MS = 3000;
-const SYNC_PUSH_DEBOUNCE_MS = 1000;
+const SYNC_POLL_INTERVAL_MS = 5000;  // Relaxed polling to 5s to reduce network churn
+const SYNC_PUSH_DEBOUNCE_MS = 2500;  // Increased debounce so you can finish typing
 
-// ====================================================================
-// State management (browser-only)
-// ====================================================================
+let pushTimeout = null;
+let pollInterval = null;
+let isDirty = false; 
+let localBaselineState = null; 
+let isInitialized = false; 
 
-const STORAGE_KEY = 'battery-dashboard-state-v1';
-
-const DEFAULT_DISTRICT_NAME = 'Default';
-
-const DEFAULT_CONFIG = {
-  rssCapacity: 300,
-  tssErCapacity: 200,
-  capacityProfile: 'RSS',
-  healthyCapacity: 300,
-  batasAtas: 2.5,
-  batasBawah: 2.0,
-  irBaselineRss: 0.00075,      // 0.75 mΩ
-  irBaselineTssEr: 0.00085,    // 0.85 mΩ
-};
-
-const SAMPLE_ROW = {
-  id: 1,
-  cellVoltage: 2.2338,
-  ir: 0.563,
-  irUnit: 'mohm',
-  rippleVoltage: 0.005,
-  measuredCapacity: null,
-  temperature: null,
-};
-
-let state = {
-  config: { ...DEFAULT_CONFIG },
-  rows: [{ ...SAMPLE_ROW }],
-  districts: [
-    { id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] },
-  ],
-  banner: null,
-};
-
-function nextRowId() {
-  return state.rows.length === 0
-    ? 1
-    : Math.max(...state.rows.map(r => r.id)) + 1;
+/**
+ * Checks if the user is actively typing in an input or textarea.
+ */
+function isUserTyping() {
+  if (typeof document === 'undefined') return false;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = active.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || active.isContentEditable;
 }
 
-function nextDistrictId() {
-  return state.districts.length === 0
-    ? 1
-    : Math.max(...state.districts.map(d => d.id)) + 1;
-}
-
-function getRowsForDistrict(district) {
-  if (!district) return [];
-  return district.rowIds
-    .map(id => state.rows.find(r => r.id === id))
-    .filter(r => r != null);
-}
-
-function escapeHTML(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') throw new Error('invalid shape');
-    if (!parsed.config || !Array.isArray(parsed.rows)) throw new Error('missing fields');
-    const rows = parsed.rows.map((r, i) => ({
-      id: i + 1,
-      cellVoltage: r.cellVoltage ?? null,
-      ir: r.ir ?? null,
-      irUnit: r.irUnit === 'mohm' ? 'mohm' : 'ohm',
-      rippleVoltage: r.rippleVoltage ?? null,
-      measuredCapacity: (typeof r.measuredCapacity === 'number' && !isNaN(r.measuredCapacity)) ? r.measuredCapacity : null,
-      temperature: (typeof r.temperature === 'number' && !isNaN(r.temperature)) ? r.temperature : null,
-    }));
-
-    let districts = [];
-    if (Array.isArray(parsed.districts) && parsed.districts.length > 0) {
-      districts = parsed.districts.map((d, i) => ({
-        id: (typeof d.id === 'number' && !isNaN(d.id)) ? d.id : i + 1,
-        name: (typeof d.name === 'string' && d.name.length > 0) ? d.name : `District ${i + 1}`,
-        rowIds: Array.isArray(d.rowIds)
-          ? d.rowIds.filter(id => rows.some(r => r.id === id))
-          : [],
-      }));
-    }
-
-    if (districts.length === 0) {
-      districts.push({
-        id: 1,
-        name: DEFAULT_DISTRICT_NAME,
-        rowIds: rows.map(r => r.id),
-      });
-    } else {
-      const assigned = new Set();
-      districts.forEach(d => d.rowIds.forEach(id => assigned.add(id)));
-      const unassigned = rows.filter(r => !assigned.has(r.id));
-      if (unassigned.length > 0) {
-        districts[0].rowIds.push(...unassigned.map(r => r.id));
-      }
-    }
-
-    state = {
-      config: {
-        ...DEFAULT_CONFIG,
-        capacityProfile: (parsed.config.capacityProfile === 'TSS/ER') ? 'TSS/ER' : 'RSS',
-        healthyCapacity: (typeof parsed.config.healthyCapacity === 'number' && !isNaN(parsed.config.healthyCapacity) && parsed.config.healthyCapacity > 0)
-          ? parsed.config.healthyCapacity
-          : DEFAULT_CONFIG.healthyCapacity,
-        batasAtas: (typeof parsed.config.batasAtas === 'number' && !isNaN(parsed.config.batasAtas))
-          ? parsed.config.batasAtas
-          : DEFAULT_CONFIG.batasAtas,
-        batasBawah: (typeof parsed.config.batasBawah === 'number' && !isNaN(parsed.config.batasBawah))
-          ? parsed.config.batasBawah
-          : DEFAULT_CONFIG.batasBawah,
-      },
-      rows,
-      districts,
-      lastSyncedAt: (typeof parsed.lastSyncedAt === 'string') ? parsed.lastSyncedAt : null,
-      banner: null,
-    };
-  } catch (err) {
-    console.error('Failed to load state:', err);
-    showBanner('Saved data was corrupt, started fresh');
-    state = {
-      config: { ...DEFAULT_CONFIG },
-      rows: [{ ...SAMPLE_ROW }],
-      districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
-      lastSyncedAt: null,
-      banner: null,
-    };
-  }
-}
-
-function saveState() {
-  markStateModified();
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      config: state.config,
-      rows: state.rows,
-      districts: state.districts,
-      lastSyncedAt: state.lastSyncedAt,
-    }));
-  } catch (err) {
-    if (err.name === 'QuotaExceededError') {
-      showBanner("Couldn't auto-save (storage full); export your data before closing");
-    } else {
-      console.error('Save failed:', err);
-    }
-  }
+/**
+ * Call this function whenever the user modifies data locally.
+ */
+function markStateModified() {
+  if (!isInitialized) return;
+  isDirty = true;
   schedulePush();
 }
 
-function showBanner(message) {
-  const el = document.getElementById('banner');
-  if (!el) return;
-  el.textContent = message;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
+/**
+ * MANDATORY INITIAL DOWNLOAD
+ */
+async function initSync() {
+  if (typeof fetch === 'undefined') return;
+  setSyncStatus('Downloading database...');
+  
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
+    if (res.ok) {
+      const remote = await res.json();
+      if (remote) {
+        const remoteDistricts = remote.districts || [];
+        const remoteRows = remote.rows || [];
+        const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
+
+        state = {
+          config: remoteConfig,
+          districts: remoteDistricts,
+          rows: remoteRows,
+          lastSyncedAt: remote.updatedAt || new Date().toISOString(),
+          banner: null,
+        };
+
+        localBaselineState = JSON.parse(JSON.stringify(state));
+        saveState();
+        if (typeof render === 'function') render();
+      }
+    }
+    setSyncStatus('Synced');
+  } catch (e) {
+    console.error('Initial database download failed:', e);
+    setSyncStatus('Sync error');
+  } finally {
+    isInitialized = true;
+    isDirty = false;
+    startPolling(); // Start polling ONLY after initial download finishes
+  }
 }
 
-function getState() { return state; }
-function setState(newState) {
-  state = newState;
-  saveState();
+async function pullFromFirebase() {
+  if (typeof fetch === 'undefined') return;
+  if (!isInitialized) return initSync();
+
+  // GUARD: Skip pulling if user is actively typing or has unsaved local changes
+  if (isDirty || isUserTyping()) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
+    if (!res.ok) return;
+
+    const remote = await res.json();
+    if (!remote || !remote.updatedAt) return;
+
+    // If nothing changed online, stay clean
+    if (remote.updatedAt === state.lastSyncedAt) {
+      setSyncStatus('Synced');
+      return;
+    }
+
+    const remoteDistricts = remote.districts || [];
+    const remoteRows = remote.rows || [];
+    const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
+
+    state = {
+      config: remoteConfig,
+      districts: remoteDistricts,
+      rows: remoteRows,
+      lastSyncedAt: remote.updatedAt,
+      banner: null,
+    };
+
+    localBaselineState = JSON.parse(JSON.stringify(state));
+    isDirty = false;
+
+    saveState();
+    if (typeof render === 'function') render();
+    setSyncStatus('Synced');
+  } catch (e) {
+    console.error('Pull failed:', e);
+  }
 }
 
+async function pushToFirebase() {
+  if (typeof fetch === 'undefined') return;
+
+  // GUARD: Don't push if not initialized, clean, or if user is still actively typing
+  if (!isInitialized || !isDirty) return;
+
+  // If user is actively typing, delay push until they finish/blur
+  if (isUserTyping()) {
+    schedulePush();
+    return;
+  }
+
+  try {
+    setSyncStatus('Syncing...');
+    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
+
+    // Snapshot current state right before network call
+    const currentStateSnapshot = JSON.parse(JSON.stringify(state));
+    const updatedAt = new Date().toISOString();
+
+    const deltaPayload = {
+      updatedAt: updatedAt,
+      version: 1
+    };
+
+    if (JSON.stringify(currentStateSnapshot.config) !== JSON.stringify(localBaselineState?.config)) {
+      deltaPayload.config = currentStateSnapshot.config;
+    }
+    if (JSON.stringify(currentStateSnapshot.districts) !== JSON.stringify(localBaselineState?.districts)) {
+      deltaPayload.districts = currentStateSnapshot.districts.length === 0 ? null : currentStateSnapshot.districts;
+    }
+    if (JSON.stringify(currentStateSnapshot.rows) !== JSON.stringify(localBaselineState?.rows)) {
+      deltaPayload.rows = currentStateSnapshot.rows.length === 0 ? null : currentStateSnapshot.rows;
+    }
+
+    const res = await fetch(`${baseUrl}/state.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(deltaPayload),
+    });
+
+    if (!res.ok) {
+      setSyncStatus('Sync error');
+      return;
+    }
+
+    // Mark as clean ONLY if no new edits occurred during the fetch call
+    if (JSON.stringify(state) === JSON.stringify(currentStateSnapshot)) {
+      isDirty = false;
+    }
+    
+    state.lastSyncedAt = updatedAt;
+    localBaselineState = currentStateSnapshot;
+
+    saveState();
+    setSyncStatus('Synced');
+  } catch (e) {
+    console.error('Push failed:', e);
+    setSyncStatus('Sync error');
+  }
+}
+
+function schedulePush() {
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
+  if (typeof setTimeout === 'undefined') return;
+  
+  if (!isInitialized || !isDirty) return;
+
+  if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
+    clearTimeout(pushTimeout);
+  }
+  pushTimeout = setTimeout(pushToFirebase, SYNC_PUSH_DEBOUNCE_MS);
+}
+
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pullFromFirebase, SYNC_POLL_INTERVAL_MS);
+}
+
+function setSyncStatus(text) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('sync-status');
+  if (el) el.textContent = text;
+}
+
+// ====================================================================
+// INITIALIZATION & EVENT LISTENERS
+// ====================================================================
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    initSync();
+
+    // Trigger push immediately when user clicks away / finishes editing an input
+    document.addEventListener('focusout', (e) => {
+      const tag = e.target.tagName?.toLowerCase();
+      if ((tag === 'input' || tag === 'textarea') && isDirty) {
+        schedulePush();
+      }
+    });
+  });
+}
 // ====================================================================
 // Derived calculations (per row)
 // ====================================================================
