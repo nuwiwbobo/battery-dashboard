@@ -336,17 +336,70 @@ let pushTimeout = null;
 let isDirty = false; // Tracks if local state has un-pushed changes
 let localBaselineState = null; // Snapshot of last synced state for comparison
 
+// FIX 1: BOOT GUARD
+// Prevents any automatic push/upload until the initial online download completes
+let isInitialized = false; 
+
 /**
  * Call this function whenever the user modifies data locally.
  * It marks the state as modified and schedules the debounced push.
  */
 function markStateModified() {
+  // Do not record edits or push if we haven't finished the initial sync
+  if (!isInitialized) return;
+
   isDirty = true;
   schedulePush();
 }
 
+/**
+ * MANDATORY INITIAL DOWNLOAD
+ * Call this ONCE when your app/page loads (e.g., inside window.onload or DOMContentLoaded)
+ */
+async function initSync() {
+  if (typeof fetch === 'undefined') return;
+  setSyncStatus('Downloading database...');
+  
+  try {
+    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
+    if (res.ok) {
+      const remote = await res.json();
+      if (remote) {
+        // Force-overwrite local state with the latest remote data on startup
+        const remoteDistricts = remote.districts || [];
+        const remoteRows = remote.rows || [];
+        const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
+
+        state = {
+          config: remoteConfig,
+          districts: remoteDistricts,
+          rows: remoteRows,
+          lastSyncedAt: remote.updatedAt || new Date().toISOString(),
+          banner: null,
+        };
+
+        // Set baseline snapshot matching online database
+        localBaselineState = JSON.parse(JSON.stringify(state));
+        saveState();
+        render();
+      }
+    }
+    setSyncStatus('Synced');
+  } catch (e) {
+    console.error('Initial database download failed:', e);
+    setSyncStatus('Sync error');
+  } finally {
+    // FIX 2: UNLOCK EDITING & PUSHING ONLY AFTER INITIAL DOWNLOAD IS COMPLETE
+    isInitialized = true;
+    isDirty = false;
+  }
+}
+
 async function pullFromFirebase() {
   if (typeof fetch === 'undefined') return;
+  // If app hasn't initialized yet, delegate to initSync
+  if (!isInitialized) return initSync();
+
   try {
     setSyncStatus('Syncing...');
     const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
@@ -360,23 +413,20 @@ async function pullFromFirebase() {
       return;
     }
 
-    // Skip pull if we are synced and have no uncommitted changes
     if (remote.updatedAt === state.lastSyncedAt && !isDirty) {
       setSyncStatus('Synced');
       return;
     }
 
-    // 1. Check exactly which parts of the data were changed LOCALLY
+    // 3-Way Merge: If edited locally, KEEP local; otherwise UPDATE to remote.
     const localConfigChanged = JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config);
     const localDistrictsChanged = JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts);
     const localRowsChanged = JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows);
 
-    // Firebase drops empty arrays, so if remote.rows is missing, it means it's empty ([])
     const remoteDistricts = remote.districts || [];
     const remoteRows = remote.rows || [];
     const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
 
-    // 2. 3-Way Merge: If you edited it locally, KEEP local. Otherwise, UPDATE to remote.
     state = {
       config: localConfigChanged ? state.config : remoteConfig,
       districts: localDistrictsChanged ? state.districts : remoteDistricts,
@@ -385,11 +435,8 @@ async function pullFromFirebase() {
       banner: null,
     };
 
-    // 3. Update the tracking flags
-    // If we kept local changes over remote ones, we are still dirty and need to push
     isDirty = localConfigChanged || localDistrictsChanged || localRowsChanged;
 
-    // 4. Update the baseline ONLY for the parts we successfully synced from remote
     if (!localBaselineState) localBaselineState = {};
     if (!localConfigChanged) localBaselineState.config = JSON.parse(JSON.stringify(remoteConfig));
     if (!localDistrictsChanged) localBaselineState.districts = JSON.parse(JSON.stringify(remoteDistricts));
@@ -407,9 +454,9 @@ async function pullFromFirebase() {
 async function pushToFirebase() {
   if (typeof fetch === 'undefined') return;
 
-  // GUARD: If nothing was changed locally, skip the push
-  if (!isDirty) {
-    setSyncStatus('Synced');
+  // FIX 3: STRICT GUARD - Do NOT push if we haven't finished initial download or have no edits
+  if (!isInitialized || !isDirty) {
+    if (isInitialized) setSyncStatus('Synced');
     return;
   }
 
@@ -417,24 +464,19 @@ async function pushToFirebase() {
     setSyncStatus('Syncing...');
     const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
 
-    // CONCURRENCY CHECK: Fetch remote metadata
+    // Concurrency check before pushing
     const remoteCheckRes = await fetch(`${baseUrl}/state/updatedAt.json`);
     if (remoteCheckRes.ok) {
       const remoteUpdatedAt = await remoteCheckRes.json();
-      
-      // If remote has newer data, pull and merge first
       if (remoteUpdatedAt && remoteUpdatedAt > (state.lastSyncedAt || '')) {
         console.warn('Remote data is newer. Merging before push...');
         await pullFromFirebase();
-        
-        // After merging, if there are no local changes left to push, exit
         if (!isDirty) return;
       }
     }
 
     const updatedAt = new Date().toISOString();
 
-    // DIFF & PATCH: Construct payload
     const deltaPayload = {
       updatedAt: updatedAt,
       version: 1
@@ -443,8 +485,6 @@ async function pushToFirebase() {
     if (JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config)) {
       deltaPayload.config = state.config;
     }
-    
-    // FIX: Firebase requires `null` to delete arrays. Empty arrays `[]` are ignored in PATCH.
     if (JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts)) {
       deltaPayload.districts = state.districts.length === 0 ? null : state.districts;
     }
@@ -452,7 +492,6 @@ async function pushToFirebase() {
       deltaPayload.rows = state.rows.length === 0 ? null : state.rows;
     }
 
-    // Send HTTP PATCH
     const res = await fetch(`${baseUrl}/state.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -464,7 +503,6 @@ async function pushToFirebase() {
       return;
     }
 
-    // Update tracking state on successful push
     state.lastSyncedAt = updatedAt;
     localBaselineState = JSON.parse(JSON.stringify(state));
     isDirty = false;
@@ -481,8 +519,8 @@ function schedulePush() {
   if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
   if (typeof setTimeout === 'undefined') return;
   
-  // Do not schedule if there are no local changes
-  if (!isDirty) return;
+  // Do not schedule pushes if app is not initialized or state is clean
+  if (!isInitialized || !isDirty) return;
 
   if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
     clearTimeout(pushTimeout);
@@ -494,6 +532,16 @@ function setSyncStatus(text) {
   if (typeof document === 'undefined') return;
   const el = document.getElementById('sync-status');
   if (el) el.textContent = text;
+}
+
+// ====================================================================
+// INITIALIZATION ON PAGE LOAD
+// ====================================================================
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    // Force download from Firebase FIRST before enabling any uploads
+    initSync();
+  });
 }
 // ====================================================================
 // Firebase sync config
