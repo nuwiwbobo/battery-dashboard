@@ -332,11 +332,6 @@ function exportCSV(districtId) {
 // ====================================================================
 // Firebase Realtime Database cloud sync
 // ====================================================================
-//
-// State is stored at FIREBASE_DB_URL + '/state.json'. The REST API is used
-// directly (no Firebase SDK) — PUT to write, GET to read. No auth token
-// is required because access is gated by the URL itself. See README
-// for security notes and the rules the user should apply.
 let pushTimeout = null;
 let isDirty = false; // Tracks if local state has un-pushed changes
 let localBaselineState = null; // Snapshot of last synced state for comparison
@@ -365,28 +360,44 @@ async function pullFromFirebase() {
       return;
     }
 
-    // Don't pull over local uncommitted changes unless necessary
+    // Skip pull if we are synced and have no uncommitted changes
     if (remote.updatedAt === state.lastSyncedAt && !isDirty) {
       setSyncStatus('Synced');
       return;
     }
 
-    // Merge or accept remote state
+    // 1. Check exactly which parts of the data were changed LOCALLY
+    const localConfigChanged = JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config);
+    const localDistrictsChanged = JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts);
+    const localRowsChanged = JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows);
+
+    // Firebase drops empty arrays, so if remote.rows is missing, it means it's empty ([])
+    const remoteDistricts = remote.districts || [];
+    const remoteRows = remote.rows || [];
+    const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
+
+    // 2. 3-Way Merge: If you edited it locally, KEEP local. Otherwise, UPDATE to remote.
     state = {
-      config: { ...DEFAULT_CONFIG, ...(remote.config || {}) },
-      districts: Array.isArray(remote.districts) ? remote.districts : state.districts,
-      rows: Array.isArray(remote.rows) ? remote.rows : state.rows,
+      config: localConfigChanged ? state.config : remoteConfig,
+      districts: localDistrictsChanged ? state.districts : remoteDistricts,
+      rows: localRowsChanged ? state.rows : remoteRows,
       lastSyncedAt: remote.updatedAt,
       banner: null,
     };
 
-    // Deep clone baseline to track future local changes
-    localBaselineState = JSON.parse(JSON.stringify(state));
-    isDirty = false;
+    // 3. Update the tracking flags
+    // If we kept local changes over remote ones, we are still dirty and need to push
+    isDirty = localConfigChanged || localDistrictsChanged || localRowsChanged;
+
+    // 4. Update the baseline ONLY for the parts we successfully synced from remote
+    if (!localBaselineState) localBaselineState = {};
+    if (!localConfigChanged) localBaselineState.config = JSON.parse(JSON.stringify(remoteConfig));
+    if (!localDistrictsChanged) localBaselineState.districts = JSON.parse(JSON.stringify(remoteDistricts));
+    if (!localRowsChanged) localBaselineState.rows = JSON.parse(JSON.stringify(remoteRows));
 
     saveState();
     render();
-    setSyncStatus('Synced');
+    setSyncStatus(isDirty ? 'Unsaved changes...' : 'Synced');
   } catch (e) {
     console.error('Pull failed:', e);
     setSyncStatus('Sync error');
@@ -396,7 +407,7 @@ async function pullFromFirebase() {
 async function pushToFirebase() {
   if (typeof fetch === 'undefined') return;
 
-  // 1. GUARD: If nothing was changed locally, skip the push entirely
+  // GUARD: If nothing was changed locally, skip the push
   if (!isDirty) {
     setSyncStatus('Synced');
     return;
@@ -406,23 +417,24 @@ async function pushToFirebase() {
     setSyncStatus('Syncing...');
     const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
 
-    // 2. CONCURRENCY CHECK: Fetch remote metadata to see if another device updated state
+    // CONCURRENCY CHECK: Fetch remote metadata
     const remoteCheckRes = await fetch(`${baseUrl}/state/updatedAt.json`);
     if (remoteCheckRes.ok) {
       const remoteUpdatedAt = await remoteCheckRes.json();
       
-      // If remote has newer data than our last sync point, pull first to avoid overwriting
-      if (remoteUpdatedAt && remoteUpdatedAt > state.lastSyncedAt) {
+      // If remote has newer data, pull and merge first
+      if (remoteUpdatedAt && remoteUpdatedAt > (state.lastSyncedAt || '')) {
         console.warn('Remote data is newer. Merging before push...');
         await pullFromFirebase();
-        // After pull, re-evaluate if local changes still need to be pushed
+        
+        // After merging, if there are no local changes left to push, exit
         if (!isDirty) return;
       }
     }
 
     const updatedAt = new Date().toISOString();
 
-    // 3. DIFF & PATCH: Construct a fine-grained payload containing ONLY modified nodes
+    // DIFF & PATCH: Construct payload
     const deltaPayload = {
       updatedAt: updatedAt,
       version: 1
@@ -431,14 +443,16 @@ async function pushToFirebase() {
     if (JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config)) {
       deltaPayload.config = state.config;
     }
+    
+    // FIX: Firebase requires `null` to delete arrays. Empty arrays `[]` are ignored in PATCH.
     if (JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts)) {
-      deltaPayload.districts = state.districts;
+      deltaPayload.districts = state.districts.length === 0 ? null : state.districts;
     }
     if (JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows)) {
-      deltaPayload.rows = state.rows;
+      deltaPayload.rows = state.rows.length === 0 ? null : state.rows;
     }
 
-    // 4. Send HTTP PATCH instead of PUT to update only modified fields
+    // Send HTTP PATCH
     const res = await fetch(`${baseUrl}/state.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -450,7 +464,7 @@ async function pushToFirebase() {
       return;
     }
 
-    // 5. Update local tracking state
+    // Update tracking state on successful push
     state.lastSyncedAt = updatedAt;
     localBaselineState = JSON.parse(JSON.stringify(state));
     isDirty = false;
@@ -481,7 +495,6 @@ function setSyncStatus(text) {
   const el = document.getElementById('sync-status');
   if (el) el.textContent = text;
 }
-
 // ====================================================================
 // Firebase sync config
 // ====================================================================
