@@ -17,37 +17,6 @@
     </div>
   </header>
 
-  <section id="config-panel">
-    <h2>Configuration</h2>
-    <div class="config-grid">
-      <label>
-        Capacity profile
-        <select id="config-profile">
-          <option value="RSS">RSS</option>
-          <option value="TSS/ER">TSS/ER</option>
-        </select>
-      </label>
-      <label>
-        Healthy capacity (Ah)
-        <input type="text" inputmode="decimal" id="config-healthy">
-      </label>
-      <label>
-        Batas atas (V)
-        <input type="text" inputmode="decimal" id="config-batas-atas">
-      </label>
-      <label>
-        Batas bawah (V)
-        <input type="text" inputmode="decimal" id="config-batas-bawah">
-      </label>
-      <div class="config-info">
-        Over-current threshold: <strong id="oc-threshold">60 A</strong> (capacity / 5)
-      </div>
-      <div class="config-info">
-        IR baseline (active profile): <strong id="ir-baseline">0.75 mΩ</strong>
-      </div>
-    </div>
-  </section>
-
   <section id="districts-section">
     <h2>Districts</h2>
     <div id="districts-container"></div>
@@ -58,6 +27,6 @@
 
   <div id="banner" hidden></div>
 
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>
