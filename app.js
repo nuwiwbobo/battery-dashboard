@@ -491,8 +491,8 @@ function setSyncStatus(text) {
 // Security: anyone with the URL can read/write. To restrict, add Firebase Auth
 // and tighten the rules at https://console.firebase.google.com/.
 const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
-const SYNC_POLL_INTERVAL_MS = 30000;
-const SYNC_PUSH_DEBOUNCE_MS = 5000;
+const SYNC_POLL_INTERVAL_MS = 300;
+const SYNC_PUSH_DEBOUNCE_MS = 500;
 
 // ====================================================================
 // State management (browser-only)
