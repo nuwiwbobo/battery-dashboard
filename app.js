@@ -330,220 +330,6 @@ function exportCSV(districtId) {
   downloadCSV(filename, csv);
 }
 // ====================================================================
-// Firebase Realtime Database cloud sync
-// ====================================================================
-let pushTimeout = null;
-let isDirty = false; // Tracks if local state has un-pushed changes
-let localBaselineState = null; // Snapshot of last synced state for comparison
-
-// FIX 1: BOOT GUARD
-// Prevents any automatic push/upload until the initial online download completes
-let isInitialized = false; 
-
-/**
- * Call this function whenever the user modifies data locally.
- * It marks the state as modified and schedules the debounced push.
- */
-function markStateModified() {
-  // Do not record edits or push if we haven't finished the initial sync
-  if (!isInitialized) return;
-
-  isDirty = true;
-  schedulePush();
-}
-
-/**
- * MANDATORY INITIAL DOWNLOAD
- * Call this ONCE when your app/page loads (e.g., inside window.onload or DOMContentLoaded)
- */
-async function initSync() {
-  if (typeof fetch === 'undefined') return;
-  setSyncStatus('Downloading database...');
-  
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
-    if (res.ok) {
-      const remote = await res.json();
-      if (remote) {
-        // Force-overwrite local state with the latest remote data on startup
-        const remoteDistricts = remote.districts || [];
-        const remoteRows = remote.rows || [];
-        const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
-
-        state = {
-          config: remoteConfig,
-          districts: remoteDistricts,
-          rows: remoteRows,
-          lastSyncedAt: remote.updatedAt || new Date().toISOString(),
-          banner: null,
-        };
-
-        // Set baseline snapshot matching online database
-        localBaselineState = JSON.parse(JSON.stringify(state));
-        saveState();
-        render();
-      }
-    }
-    setSyncStatus('Synced');
-  } catch (e) {
-    console.error('Initial database download failed:', e);
-    setSyncStatus('Sync error');
-  } finally {
-    // FIX 2: UNLOCK EDITING & PUSHING ONLY AFTER INITIAL DOWNLOAD IS COMPLETE
-    isInitialized = true;
-    isDirty = false;
-  }
-}
-
-async function pullFromFirebase() {
-  if (typeof fetch === 'undefined') return;
-  // If app hasn't initialized yet, delegate to initSync
-  if (!isInitialized) return initSync();
-
-  try {
-    setSyncStatus('Syncing...');
-    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
-    if (!res.ok) {
-      setSyncStatus('Sync error');
-      return;
-    }
-    const remote = await res.json();
-    if (!remote || !remote.updatedAt) {
-      setSyncStatus('No remote state');
-      return;
-    }
-
-    if (remote.updatedAt === state.lastSyncedAt && !isDirty) {
-      setSyncStatus('Synced');
-      return;
-    }
-
-    // 3-Way Merge: If edited locally, KEEP local; otherwise UPDATE to remote.
-    const localConfigChanged = JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config);
-    const localDistrictsChanged = JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts);
-    const localRowsChanged = JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows);
-
-    const remoteDistricts = remote.districts || [];
-    const remoteRows = remote.rows || [];
-    const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
-
-    state = {
-      config: localConfigChanged ? state.config : remoteConfig,
-      districts: localDistrictsChanged ? state.districts : remoteDistricts,
-      rows: localRowsChanged ? state.rows : remoteRows,
-      lastSyncedAt: remote.updatedAt,
-      banner: null,
-    };
-
-    isDirty = localConfigChanged || localDistrictsChanged || localRowsChanged;
-
-    if (!localBaselineState) localBaselineState = {};
-    if (!localConfigChanged) localBaselineState.config = JSON.parse(JSON.stringify(remoteConfig));
-    if (!localDistrictsChanged) localBaselineState.districts = JSON.parse(JSON.stringify(remoteDistricts));
-    if (!localRowsChanged) localBaselineState.rows = JSON.parse(JSON.stringify(remoteRows));
-
-    saveState();
-    render();
-    setSyncStatus(isDirty ? 'Unsaved changes...' : 'Synced');
-  } catch (e) {
-    console.error('Pull failed:', e);
-    setSyncStatus('Sync error');
-  }
-}
-
-async function pushToFirebase() {
-  if (typeof fetch === 'undefined') return;
-
-  // FIX 3: STRICT GUARD - Do NOT push if we haven't finished initial download or have no edits
-  if (!isInitialized || !isDirty) {
-    if (isInitialized) setSyncStatus('Synced');
-    return;
-  }
-
-  try {
-    setSyncStatus('Syncing...');
-    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
-
-    // Concurrency check before pushing
-    const remoteCheckRes = await fetch(`${baseUrl}/state/updatedAt.json`);
-    if (remoteCheckRes.ok) {
-      const remoteUpdatedAt = await remoteCheckRes.json();
-      if (remoteUpdatedAt && remoteUpdatedAt > (state.lastSyncedAt || '')) {
-        console.warn('Remote data is newer. Merging before push...');
-        await pullFromFirebase();
-        if (!isDirty) return;
-      }
-    }
-
-    const updatedAt = new Date().toISOString();
-
-    const deltaPayload = {
-      updatedAt: updatedAt,
-      version: 1
-    };
-
-    if (JSON.stringify(state.config) !== JSON.stringify(localBaselineState?.config)) {
-      deltaPayload.config = state.config;
-    }
-    if (JSON.stringify(state.districts) !== JSON.stringify(localBaselineState?.districts)) {
-      deltaPayload.districts = state.districts.length === 0 ? null : state.districts;
-    }
-    if (JSON.stringify(state.rows) !== JSON.stringify(localBaselineState?.rows)) {
-      deltaPayload.rows = state.rows.length === 0 ? null : state.rows;
-    }
-
-    const res = await fetch(`${baseUrl}/state.json`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(deltaPayload),
-    });
-
-    if (!res.ok) {
-      setSyncStatus('Sync error');
-      return;
-    }
-
-    state.lastSyncedAt = updatedAt;
-    localBaselineState = JSON.parse(JSON.stringify(state));
-    isDirty = false;
-
-    saveState();
-    setSyncStatus('Synced');
-  } catch (e) {
-    console.error('Push failed:', e);
-    setSyncStatus('Sync error');
-  }
-}
-
-function schedulePush() {
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
-  if (typeof setTimeout === 'undefined') return;
-  
-  // Do not schedule pushes if app is not initialized or state is clean
-  if (!isInitialized || !isDirty) return;
-
-  if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
-    clearTimeout(pushTimeout);
-  }
-  pushTimeout = setTimeout(pushToFirebase, SYNC_PUSH_DEBOUNCE_MS);
-}
-
-function setSyncStatus(text) {
-  if (typeof document === 'undefined') return;
-  const el = document.getElementById('sync-status');
-  if (el) el.textContent = text;
-}
-
-// ====================================================================
-// INITIALIZATION ON PAGE LOAD
-// ====================================================================
-if (typeof window !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    // Force download from Firebase FIRST before enabling any uploads
-    initSync();
-  });
-}
-// ====================================================================
 // Firebase Sync Config & State Variables
 // ====================================================================
 const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -762,6 +548,182 @@ if (typeof window !== 'undefined') {
     });
   });
 }
+
+// ====================================================================
+// State management (browser-only)
+// ====================================================================
+
+const STORAGE_KEY = 'battery-dashboard-state-v1';
+
+const DEFAULT_DISTRICT_NAME = 'Default';
+
+const DEFAULT_CONFIG = {
+  rssCapacity: 300,
+  tssErCapacity: 200,
+  capacityProfile: 'RSS',
+  healthyCapacity: 300,
+  batasAtas: 2.5,
+  batasBawah: 2.0,
+  irBaselineRss: 0.00075,      // 0.75 mΩ
+  irBaselineTssEr: 0.00085,    // 0.85 mΩ
+};
+
+const SAMPLE_ROW = {
+  id: 1,
+  cellVoltage: 2.2338,
+  ir: 0.563,
+  irUnit: 'mohm',
+  rippleVoltage: 0.005,
+  measuredCapacity: null,
+  temperature: null,
+};
+
+let state = {
+  config: { ...DEFAULT_CONFIG },
+  rows: [{ ...SAMPLE_ROW }],
+  districts: [
+    { id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] },
+  ],
+  banner: null,
+};
+
+function nextRowId() {
+  return state.rows.length === 0
+    ? 1
+    : Math.max(...state.rows.map(r => r.id)) + 1;
+}
+
+function nextDistrictId() {
+  return state.districts.length === 0
+    ? 1
+    : Math.max(...state.districts.map(d => d.id)) + 1;
+}
+
+function getRowsForDistrict(district) {
+  if (!district) return [];
+  return district.rowIds
+    .map(id => state.rows.find(r => r.id === id))
+    .filter(r => r != null);
+}
+
+function escapeHTML(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') throw new Error('invalid shape');
+    if (!parsed.config || !Array.isArray(parsed.rows)) throw new Error('missing fields');
+    const rows = parsed.rows.map((r, i) => ({
+      id: i + 1,
+      cellVoltage: r.cellVoltage ?? null,
+      ir: r.ir ?? null,
+      irUnit: r.irUnit === 'mohm' ? 'mohm' : 'ohm',
+      rippleVoltage: r.rippleVoltage ?? null,
+      measuredCapacity: (typeof r.measuredCapacity === 'number' && !isNaN(r.measuredCapacity)) ? r.measuredCapacity : null,
+      temperature: (typeof r.temperature === 'number' && !isNaN(r.temperature)) ? r.temperature : null,
+    }));
+
+    let districts = [];
+    if (Array.isArray(parsed.districts) && parsed.districts.length > 0) {
+      districts = parsed.districts.map((d, i) => ({
+        id: (typeof d.id === 'number' && !isNaN(d.id)) ? d.id : i + 1,
+        name: (typeof d.name === 'string' && d.name.length > 0) ? d.name : `District ${i + 1}`,
+        rowIds: Array.isArray(d.rowIds)
+          ? d.rowIds.filter(id => rows.some(r => r.id === id))
+          : [],
+      }));
+    }
+
+    if (districts.length === 0) {
+      districts.push({
+        id: 1,
+        name: DEFAULT_DISTRICT_NAME,
+        rowIds: rows.map(r => r.id),
+      });
+    } else {
+      const assigned = new Set();
+      districts.forEach(d => d.rowIds.forEach(id => assigned.add(id)));
+      const unassigned = rows.filter(r => !assigned.has(r.id));
+      if (unassigned.length > 0) {
+        districts[0].rowIds.push(...unassigned.map(r => r.id));
+      }
+    }
+
+    state = {
+      config: {
+        ...DEFAULT_CONFIG,
+        capacityProfile: (parsed.config.capacityProfile === 'TSS/ER') ? 'TSS/ER' : 'RSS',
+        healthyCapacity: (typeof parsed.config.healthyCapacity === 'number' && !isNaN(parsed.config.healthyCapacity) && parsed.config.healthyCapacity > 0)
+          ? parsed.config.healthyCapacity
+          : DEFAULT_CONFIG.healthyCapacity,
+        batasAtas: (typeof parsed.config.batasAtas === 'number' && !isNaN(parsed.config.batasAtas))
+          ? parsed.config.batasAtas
+          : DEFAULT_CONFIG.batasAtas,
+        batasBawah: (typeof parsed.config.batasBawah === 'number' && !isNaN(parsed.config.batasBawah))
+          ? parsed.config.batasBawah
+          : DEFAULT_CONFIG.batasBawah,
+      },
+      rows,
+      districts,
+      lastSyncedAt: (typeof parsed.lastSyncedAt === 'string') ? parsed.lastSyncedAt : null,
+      banner: null,
+    };
+  } catch (err) {
+    console.error('Failed to load state:', err);
+    showBanner('Saved data was corrupt, started fresh');
+    state = {
+      config: { ...DEFAULT_CONFIG },
+      rows: [{ ...SAMPLE_ROW }],
+      districts: [{ id: 1, name: DEFAULT_DISTRICT_NAME, rowIds: [1] }],
+      lastSyncedAt: null,
+      banner: null,
+    };
+  }
+}
+
+function saveState() {
+  markStateModified();
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      config: state.config,
+      rows: state.rows,
+      districts: state.districts,
+      lastSyncedAt: state.lastSyncedAt,
+    }));
+  } catch (err) {
+    if (err.name === 'QuotaExceededError') {
+      showBanner("Couldn't auto-save (storage full); export your data before closing");
+    } else {
+      console.error('Save failed:', err);
+    }
+  }
+  schedulePush();
+}
+
+function showBanner(message) {
+  const el = document.getElementById('banner');
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+function getState() { return state; }
+function setState(newState) {
+  state = newState;
+  saveState();
+}
+
 // ====================================================================
 // Derived calculations (per row)
 // ====================================================================
