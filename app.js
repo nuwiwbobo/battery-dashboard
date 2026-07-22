@@ -330,225 +330,70 @@ function exportCSV(districtId) {
   downloadCSV(filename, csv);
 }
 // ====================================================================
-// Firebase Sync Config & State Variables
+// Firebase Sync Config & Controls
 // ====================================================================
 const FIREBASE_DB_URL = 'https://battery-dashboard-af4ce-default-rtdb.asia-southeast1.firebasedatabase.app';
-const SYNC_POLL_INTERVAL_MS = 5000;  // Relaxed polling to 5s to reduce network churn
-const SYNC_PUSH_DEBOUNCE_MS = 2500;  // Increased debounce so you can finish typing
 
-let pushTimeout = null;
-let pollInterval = null;
-let isDirty = false; 
-let localBaselineState = null; 
-let isInitialized = false; 
+let isDirty = false;
 
 /**
- * Checks if the user is actively typing in an input or textarea.
- */
-function isUserTyping() {
-  if (typeof document === 'undefined') return false;
-  const active = document.activeElement;
-  if (!active) return false;
-  const tag = active.tagName.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || active.isContentEditable;
-}
-
-/**
- * Call this function whenever the user modifies data locally.
+ * Call this whenever state changes locally to flag uncommitted changes.
  */
 function markStateModified() {
-  if (!isInitialized) return;
   isDirty = true;
-  schedulePush();
 }
 
 /**
- * MANDATORY INITIAL DOWNLOAD
+ * Manual Download (Pull from Firebase)
+ * Notifies the user if new data was updated, if data is already up-to-date, or if errors occur.
  */
-async function initSync() {
+async function downloadFromFirebase() {
   if (typeof fetch === 'undefined') return;
-  setSyncStatus('Downloading database...');
-  
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
-    if (res.ok) {
-      const remote = await res.json();
-      if (remote) {
-        const remoteDistricts = remote.districts || [];
-        const remoteRows = remote.rows || [];
-        const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
-
-        state = {
-          config: remoteConfig,
-          districts: remoteDistricts,
-          rows: remoteRows,
-          lastSyncedAt: remote.updatedAt || new Date().toISOString(),
-          banner: null,
-        };
-
-        localBaselineState = JSON.parse(JSON.stringify(state));
-        saveState();
-        if (typeof render === 'function') render();
-      }
-    }
-    setSyncStatus('Synced');
-  } catch (e) {
-    console.error('Initial database download failed:', e);
-    setSyncStatus('Sync error');
-  } finally {
-    isInitialized = true;
-    isDirty = false;
-    startPolling(); // Start polling ONLY after initial download finishes
-  }
-}
-
-async function pullFromFirebase() {
-  if (typeof fetch === 'undefined') return;
-  if (!isInitialized) return initSync();
-
-  // GUARD: Skip pulling if user is actively typing or has unsaved local changes
-  if (isDirty || isUserTyping()) {
-    return;
-  }
+  setSyncStatus('Downloading...');
 
   try {
     const res = await fetch(`${FIREBASE_DB_URL.replace(/\/$/, '')}/state.json`);
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
 
     const remote = await res.json();
-    if (!remote || !remote.updatedAt) return;
-
-    // If nothing changed online, stay clean
-    if (remote.updatedAt === state.lastSyncedAt) {
-      setSyncStatus('Synced');
+    if (!remote) {
+      showBanner('Database is empty.');
+      setSyncStatus('Idle');
       return;
     }
 
-    const remoteDistricts = remote.districts || [];
-    const remoteRows = remote.rows || [];
-    const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
+    // Check if remote data is newer than local lastSyncedAt
+    const isNewData = !state.lastSyncedAt || (remote.updatedAt && remote.updatedAt > state.lastSyncedAt);
 
-    state = {
-      config: remoteConfig,
-      districts: remoteDistricts,
-      rows: remoteRows,
-      lastSyncedAt: remote.updatedAt,
-      banner: null,
-    };
+    if (isNewData) {
+      const remoteDistricts = remote.districts || [];
+      const remoteRows = remote.rows || [];
+      const remoteConfig = { ...DEFAULT_CONFIG, ...(remote.config || {}) };
 
-    localBaselineState = JSON.parse(JSON.stringify(state));
-    isDirty = false;
+      state = {
+        config: remoteConfig,
+        districts: remoteDistricts,
+        rows: remoteRows,
+        lastSyncedAt: remote.updatedAt || new Date().toISOString(),
+        banner: null,
+      };
 
-    saveState();
-    if (typeof render === 'function') render();
-    setSyncStatus('Synced');
-  } catch (e) {
-    console.error('Pull failed:', e);
-  }
-}
-
-async function pushToFirebase() {
-  if (typeof fetch === 'undefined') return;
-
-  // GUARD: Don't push if not initialized, clean, or if user is still actively typing
-  if (!isInitialized || !isDirty) return;
-
-  // If user is actively typing, delay push until they finish/blur
-  if (isUserTyping()) {
-    schedulePush();
-    return;
-  }
-
-  try {
-    setSyncStatus('Syncing...');
-    const baseUrl = FIREBASE_DB_URL.replace(/\/$/, '');
-
-    // Snapshot current state right before network call
-    const currentStateSnapshot = JSON.parse(JSON.stringify(state));
-    const updatedAt = new Date().toISOString();
-
-    const deltaPayload = {
-      updatedAt: updatedAt,
-      version: 1
-    };
-
-    if (JSON.stringify(currentStateSnapshot.config) !== JSON.stringify(localBaselineState?.config)) {
-      deltaPayload.config = currentStateSnapshot.config;
-    }
-    if (JSON.stringify(currentStateSnapshot.districts) !== JSON.stringify(localBaselineState?.districts)) {
-      deltaPayload.districts = currentStateSnapshot.districts.length === 0 ? null : currentStateSnapshot.districts;
-    }
-    if (JSON.stringify(currentStateSnapshot.rows) !== JSON.stringify(localBaselineState?.rows)) {
-      deltaPayload.rows = currentStateSnapshot.rows.length === 0 ? null : currentStateSnapshot.rows;
-    }
-
-    const res = await fetch(`${baseUrl}/state.json`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(deltaPayload),
-    });
-
-    if (!res.ok) {
-      setSyncStatus('Sync error');
-      return;
-    }
-
-    // Mark as clean ONLY if no new edits occurred during the fetch call
-    if (JSON.stringify(state) === JSON.stringify(currentStateSnapshot)) {
       isDirty = false;
+      saveState(false); // Save locally without marking modified
+      if (typeof render === 'function') render();
+
+      setSyncStatus('Downloaded');
+      showBanner('🔔 New data detected and downloaded successfully!');
+    } else {
+      setSyncStatus('Up-to-date');
+      showBanner('ℹ️ Local data is already up to date with cloud.');
     }
-    
-    state.lastSyncedAt = updatedAt;
-    localBaselineState = currentStateSnapshot;
-
-    saveState();
-    setSyncStatus('Synced');
   } catch (e) {
-    console.error('Push failed:', e);
-    setSyncStatus('Sync error');
+    console.error('Download failed:', e);
+    setSyncStatus('Error');
+    showBanner('❌ Failed to download data from cloud.');
   }
 }
-
-function schedulePush() {
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) return;
-  if (typeof setTimeout === 'undefined') return;
-  
-  if (!isInitialized || !isDirty) return;
-
-  if (pushTimeout != null && typeof clearTimeout !== 'undefined') {
-    clearTimeout(pushTimeout);
-  }
-  pushTimeout = setTimeout(pushToFirebase, SYNC_PUSH_DEBOUNCE_MS);
-}
-
-function startPolling() {
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(pullFromFirebase, SYNC_POLL_INTERVAL_MS);
-}
-
-function setSyncStatus(text) {
-  if (typeof document === 'undefined') return;
-  const el = document.getElementById('sync-status');
-  if (el) el.textContent = text;
-}
-
-// ====================================================================
-// INITIALIZATION & EVENT LISTENERS
-// ====================================================================
-if (typeof window !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    initSync();
-
-    // Trigger push immediately when user clicks away / finishes editing an input
-    document.addEventListener('focusout', (e) => {
-      const tag = e.target.tagName?.toLowerCase();
-      if ((tag === 'input' || tag === 'textarea') && isDirty) {
-        schedulePush();
-      }
-    });
-  });
-}
-
 // ====================================================================
 // State management (browser-only)
 // ====================================================================
